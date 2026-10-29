@@ -1,16 +1,16 @@
 substitutions:
   name: jup-inverter
   friendly_name: "Chisage JUP"
-  # Modbus-адреса блоку інвертора (за документацією - непарне число 0..63; зазвичай 1).
+  # Modbus address of the inverter block (per the documentation - an odd number 0..63; usually 1).
   inverter_address: "1"
-  # Modbus-адреса DC-блоку (регістри 2000+, налаштування батареї).
-  # Якщо відповідає та сама адреса - залиште як є. Якщо регістри 2000+ дають
-  # таймаути, спробуйте парну адресу (наприклад "2") - у документації DC-блок парний.
+  # Modbus address of the DC block (registers 2000+, battery settings).
+  # If the same address responds - leave as is. If registers 2000+ give
+  # timeouts, try an even address (e.g. "2") - in the documentation the DC block is even.
   dc_address: "1"
-  # Верхня межа слайдерів TOU Power Slot (Вт). За документацією діапазон 0..12000 (аркуш Parameter Group), у прикладі теж 12000.
+  # Upper limit of the TOU Power Slot sliders (W). Per the documentation the range is 0..12000 (Parameter Group sheet), the example also uses 12000.
   tou_max_power: "6000"
-  # Мінімальна виміряна напруга (В), з якої мережа / генератор вважаються присутніми
-  # (для сутностей Grid Faults, Generator Faults, Grid Present, Generator Present).
+  # Minimum measured voltage (V) from which the grid / generator are considered present
+  # (for the Grid Faults, Generator Faults, Grid Present, Generator Present entities).
   ac_present_voltage: "10"
 
 esphome:
@@ -59,38 +59,38 @@ modbus:
   turnaround_time: 150ms
 
 modbus_controller:
-  # Швидкі дані інвертора (потужності, напруги, статуси)
+  # Fast inverter data (powers, voltages, statuses)
   - id: inv_fast
     address: ${inverter_address}
     modbus_id: modbus_rs485
     update_interval: 10s
     offline_skip_updates: 5
-  # Швидкі дані DC-блоку (аварії, стан)
+  # Fast DC block data (faults, state)
   - id: dc_fast
     address: ${dc_address}
     modbus_id: modbus_rs485
     update_interval: 10s
     offline_skip_updates: 5
-  # Повільні дані DC-блоку (лічильники енергії, налаштування)
+  # Slow DC block data (energy counters, settings)
   - id: dc_slow
     address: ${dc_address}
     modbus_id: modbus_rs485
     update_interval: 60s
     offline_skip_updates: 5
-  # Time of Use: розклад (регістри 2669..2734) - змінюється рідко
+  # Time of Use: schedule (registers 2669..2734) - changes rarely
   - id: dc_tou
     address: ${dc_address}
     modbus_id: modbus_rs485
     update_interval: 120s
     offline_skip_updates: 5
-  # Годинник інвертора (регістри 655..661, блок інвертора)
+  # Inverter clock (registers 655..661, inverter block)
   - id: inv_slow
     address: ${inverter_address}
     modbus_id: modbus_rs485
     update_interval: 60s
     offline_skip_updates: 5
 
-# Writer-и для скриптів запису (lambda hook, лише запис)
+# Writers for write scripts (lambda hook, write only)
 modbus_client:
   - id: jup_inv_writer
     address: ${inverter_address}
@@ -101,9 +101,9 @@ modbus_client:
 # ===========================================================================
 #  SENSORS
 # ===========================================================================
-# Остання сторінка Time of Use, у яку ви писали значення слотів (4 = SOC, 5 = Voltage, 6 = Power).
-# Інвертор визначає режим TOU за номером останньої записаної сторінки, тому зміна часу чи
-# дозволів заряду пишеться тією ж сторінкою і не перемикає режим. Окремого вибору "TOU Type" більше немає.
+# The last Time of Use page to which you wrote slot values (4 = SOC, 5 = Voltage, 6 = Power).
+# The inverter determines the TOU mode by the number of the last written page, so changing the time or
+# charging permissions is written with the same page and does not switch the mode. There is no separate "TOU Type" selection anymore.
 globals:
   - id: tou_page
     type: int
@@ -112,7 +112,7 @@ globals:
 
 sensor:
 
-  # ---- PV (сонячні панелі) ----
+  # ---- PV (solar panels) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "PV1 Voltage"
@@ -206,7 +206,7 @@ sensor:
     filters:
       - multiply: 0.1
 
-  # ---- Батарея ----
+  # ---- Battery ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Battery Voltage"
@@ -323,7 +323,7 @@ sensor:
     filters:
       - multiply: 0.1
 
-  # ---- Мережа (Grid) ----
+  # ---- Grid ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     id: grid_voltage_v
@@ -453,7 +453,7 @@ sensor:
     filters:
       - multiply: 0.01
 
-  # ---- Генератор ----
+  # ---- Generator ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     id: generator_voltage_v
@@ -502,7 +502,7 @@ sensor:
     state_class: measurement
     accuracy_decimals: 0
 
-  # ---- Навантаження (Load / UPS / Smart / Home) ----
+  # ---- Load (Load / UPS / Smart / Home) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Load Voltage"
@@ -594,7 +594,7 @@ sensor:
     filters:
       - multiply: 0.1
 
-  # ---- Інвертор (стан, температури, діагностика) ----
+  # ---- Inverter (state, temperatures, diagnostics) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Inverter Voltage"
@@ -728,7 +728,7 @@ sensor:
     filters:
       - multiply: 0.1
 
-  # ---- Аварії та попередження (загальні) ----
+  # ---- Faults and warnings (general) ----
   - platform: template
     name: "Active Warnings Count"
     icon: mdi:counter
@@ -750,13 +750,13 @@ sensor:
       if (std::isnan(id(raw_fault1).state) || std::isnan(id(raw_fault2).state)) return {};
       return (float) (__builtin_popcount((uint16_t) id(raw_fault1).state) + __builtin_popcount((uint16_t) id(raw_fault2).state));
 
-  # ---- Діагностика ESP ----
+  # ---- ESP diagnostics ----
   - platform: wifi_signal
     name: "WiFi Signal"
     update_interval: 60s
     entity_category: diagnostic
 
-  # ---- Службові регістри (сирі слова; для text/binary-сенсорів і скриптів запису) ----
+  # ---- Service registers (raw words; for text/binary sensors and write scripts) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     id: raw_working_mode
@@ -1044,7 +1044,7 @@ sensor:
 
 
 
-  # ---- Налаштування мережі / генератора (сирі слова інверторного блоку, регістри 701..705) ----
+  # ---- Grid / generator settings (raw words of the inverter block, registers 701..705) ----
   - platform: modbus_controller
     modbus_controller_id: inv_slow
     id: raw_gen_port
@@ -1093,11 +1093,11 @@ sensor:
 
 
 # ===========================================================================
-#  BINARY SENSORS (біти статусних слів: Table 1-3 / 1-5)
+#  BINARY SENSORS (bits of the status words: Table 1-3 / 1-5)
 # ===========================================================================
 binary_sensor:
 
-  # ---- PV (сонячні панелі) ----
+  # ---- PV (solar panels) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "PV1 Operating"
@@ -1113,7 +1113,7 @@ binary_sensor:
     bitmask: 0x0002
     device_class: running
 
-  # ---- Батарея ----
+  # ---- Battery ----
   - platform: modbus_controller
     modbus_controller_id: dc_fast
     name: "BMS Charge Enabled"
@@ -1138,7 +1138,7 @@ binary_sensor:
     entity_category: diagnostic
     disabled_by_default: true
 
-  # ---- Мережа (Grid) ----
+  # ---- Grid ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Grid Relay Closed"
@@ -1152,7 +1152,7 @@ binary_sensor:
       if (std::isnan(id(grid_voltage_v).state)) return {};
       return id(grid_voltage_v).state >= ${ac_present_voltage};
 
-  # ---- Генератор ----
+  # ---- Generator ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Generator Relay Closed"
@@ -1166,7 +1166,7 @@ binary_sensor:
       if (std::isnan(id(generator_voltage_v).state)) return {};
       return id(generator_voltage_v).state >= ${ac_present_voltage};
 
-  # ---- Навантаження (Load / UPS / Smart / Home) ----
+  # ---- Load (Load / UPS / Smart / Home) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Smart Load On"
@@ -1174,7 +1174,7 @@ binary_sensor:
     register_type: holding
     bitmask: 0x0200
 
-  # ---- Інвертор (стан, температури, діагностика) ----
+  # ---- Inverter (state, temperatures, diagnostics) ----
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "DC Normal Operation"
@@ -1199,7 +1199,7 @@ binary_sensor:
     device_class: connectivity
     entity_category: diagnostic
 
-  # ---- Аварії та попередження (загальні) ----
+  # ---- Faults and warnings (general) ----
   - platform: template
     name: "Warning Active"
     device_class: problem
@@ -1219,7 +1219,7 @@ binary_sensor:
 # ===========================================================================
 text_sensor:
 
-  # ---- PV (сонячні панелі) ----
+  # ---- PV (solar panels) ----
   - platform: template
     name: "PV Status"
     icon: mdi:solar-panel
@@ -1241,7 +1241,7 @@ text_sensor:
       if (out.size() > 250) out = out.substr(0, 247) + "...";
       return out;
 
-  # ---- Батарея ----
+  # ---- Battery ----
   - platform: template
     name: "Battery Faults"
     icon: mdi:battery-alert
@@ -1263,7 +1263,7 @@ text_sensor:
       if (out.size() > 250) out = out.substr(0, 247) + "...";
       return out;
 
-  # ---- Мережа (Grid) ----
+  # ---- Grid ----
   - platform: template
     name: "Grid Faults"
     icon: mdi:transmission-tower-off
@@ -1281,9 +1281,9 @@ text_sensor:
       add((s4 & 0x0020) != 0, "Anti-islanding frequency anomaly");
       add((s4 & 0x0400) != 0, "Grid frequency abnormal");
       add((s4 & 0x0200) != 0, "Grid voltage amplitude abnormal");
-      // Напруга мережі - лише за прапорцями інвертора, без порівняння з виміряною напругою.
-      // Біт 7 (W08) = занижена напруга; біт 15 (W16) = вихід за межі в будь-який бік (напрямок невідомий).
-      // Якщо встановлені обидва, показуємо точніший "Grid low voltage", щоб не дублювати.
+      // Grid voltage - only from the inverter flags, without comparing against the measured voltage.
+      // Bit 7 (W08) = low voltage; bit 15 (W16) = out of range in either direction (direction unknown).
+      // If both are set, we show the more precise "Grid low voltage" so as not to duplicate.
       const bool v_low = (a1 & 0x0080) != 0;
       add(v_low, "Grid low voltage");
       add(!v_low && (a1 & 0x8000) != 0, "Grid over/under voltage");
@@ -1295,7 +1295,7 @@ text_sensor:
       if (out.size() > 250) out = out.substr(0, 247) + "...";
       return out;
 
-  # ---- Генератор ----
+  # ---- Generator ----
   - platform: template
     name: "Generator Faults"
     icon: mdi:engine-off
@@ -1320,7 +1320,7 @@ text_sensor:
       if (out.size() > 250) out = out.substr(0, 247) + "...";
       return out;
 
-  # ---- Інвертор (стан, температури, діагностика) ----
+  # ---- Inverter (state, temperatures, diagnostics) ----
   - platform: template
     name: "Working Mode"
     update_interval: 10s
@@ -1390,7 +1390,7 @@ text_sensor:
       if (out.size() > 250) out = out.substr(0, 247) + "...";
       return out;
 
-  # ---- Аварії та попередження (загальні) ----
+  # ---- Faults and warnings (general) ----
   - platform: template
     name: "Active Faults"
     icon: mdi:alert-octagon
@@ -1415,12 +1415,12 @@ text_sensor:
 
 
 # ===========================================================================
-#  SCRIPTS (запис параметрів)
+#  SCRIPTS (writing parameters)
 # ===========================================================================
 script:
-  # Сторінка параметрів №3 (мережа/генератор: ліміти заряду та розряду).
-  # Інвертор приймає сторінку ЦІЛКОМ: K0 (=номер сторінки) + K1..K13 одним записом
-  # у регістри 5000..5013. Тому змінюємо одне значення, решту беремо з поточних.
+  # Parameter page No. 3 (grid/generator: charge and discharge limits).
+  # The inverter accepts the page AS A WHOLE: K0 (= page number) + K1..K13 in a single write
+  # to registers 5000..5013. So we change one value and take the rest from the current ones.
   - id: jup_write_grid_page
     mode: queued
     parameters:
@@ -1440,7 +1440,7 @@ script:
           };
           cur[idx] = newval;
           uint16_t regs[14];
-          regs[0] = 3;  // K0 = номер сторінки
+          regs[0] = 3;  // K0 = page number
           for (int i = 0; i < 13; i++) {
             if (std::isnan(cur[i])) {
               ESP_LOGW("jup", "Page 3 not fully read yet (param %d) - write skipped", i + 1);
@@ -1451,8 +1451,8 @@ script:
           ESP_LOGI("jup", "Writing page 3: K%d = %.2f", idx + 1, newval);
           id(jup_dc_writer).write_multiple_registers(5000, regs);
 
-  # Запис прапорців у спільні слова 2732 (генератор) / 2733 (мережа):
-  # читаємо поточне слово, міняємо лише потрібні біти, пишемо назад.
+  # Writing flags to the shared words 2732 (generator) / 2733 (grid):
+  # read the current word, change only the needed bits, write it back.
   - id: jup_write_ctrl_word
     mode: queued
     parameters:
@@ -1474,13 +1474,13 @@ script:
           src->publish_state(v);
 
 
-  # Time of Use, сторінки 4 (SOC) / 5 (Voltage) / 6 (Power).
-  # Інвертор приймає сторінку ЦІЛКОМ: K0 (=номер сторінки) + K1..K20 одним записом
-  # у регістри 5000..5020:  K1..K8 = час переходів (HHMM), K9..K17 = значення 9 слотів,
+  # Time of Use, pages 4 (SOC) / 5 (Voltage) / 6 (Power).
+  # The inverter accepts the page AS A WHOLE: K0 (= page number) + K1..K20 in a single write
+  # to registers 5000..5020:  K1..K8 = transition times (HHMM), K9..K17 = values of the 9 slots,
   # K18 = Time of Use enable (5/0), K19 = grid charge flag, K20 = generator charge flag.
-  # Час і прапорці спільні для всіх трьох сторінок; значення слотів - свої на кожну сторінку.
-  # K19 / K20 - бітові маски: біт 0..8 = дозвіл заряду від мережі / генератора для слотів 1..9.
-  # idx: 0..7 час, 8..16 слоти, 17 enable, 18 grid chg, 19 gen chg.
+  # Time and flags are shared by all three pages; slot values are separate for each page.
+  # K19 / K20 - bit masks: bit 0..8 = permission to charge from grid / generator for slots 1..9.
+  # idx: 0..7 time, 8..16 slots, 17 enable, 18 grid chg, 19 gen chg.
   - id: jup_write_tou_page
     mode: queued
     parameters:
@@ -1490,7 +1490,7 @@ script:
     then:
       - lambda: |-
           if (page < 4 || page > 6 || idx < -1 || idx > 19) return;
-          // Час (idx 0..7) і прапорці (idx 17..19) пишемо тією сторінкою, у яку востаннє писали слоти
+          // Time (idx 0..7) and flags (idx 17..19) are written with the page to which the slots were last written
           int pg = page;
           if (idx >= 0 && (idx < 8 || idx >= 17)) pg = id(tou_page);
           if (pg < 4 || pg > 6) pg = 4;
@@ -1509,14 +1509,14 @@ script:
                             id(raw_tou_gen_chg).state};
           float *vals = (pg == 4) ? s : ((pg == 5) ? v : p);
           const float scale = (pg == 5) ? 0.01f : 1.0f;
-          if (idx >= 0) {  // idx = -1: переписати сторінку як є (зміна типу TOU)
+          if (idx >= 0) {  // idx = -1: rewrite the page as is (changing the TOU type)
             if (idx < 8) t[idx] = newval;
             else if (idx < 17) vals[idx - 8] = newval;
             else flags[idx - 17] = newval;
           }
 
           uint16_t regs[21];
-          regs[0] = pg;  // K0 = номер сторінки
+          regs[0] = pg;  // K0 = page number
           int prev = -1;
           for (int i = 0; i < 8; i++) {
             if (std::isnan(t[i])) {
@@ -1548,7 +1548,7 @@ script:
           }
           ESP_LOGI("jup", "Writing TOU pg %d: idx %d = %.2f", pg, idx, newval);
           id(jup_dc_writer).write_multiple_registers(5000, regs);
-          if (idx >= 8 && idx < 17) id(tou_page) = pg;  // запис слота вибирає режим TOU (SOC / Voltage / Power)
+          if (idx >= 8 && idx < 17) id(tou_page) = pg;  // a slot write selects the TOU mode (SOC / Voltage / Power)
           if (idx >= 0 && idx < 8) {
             sensor::Sensor *ts[8] = {id(tou_t1), id(tou_t2), id(tou_t3), id(tou_t4),
                                      id(tou_t5), id(tou_t6), id(tou_t7), id(tou_t8)};
@@ -1559,15 +1559,15 @@ script:
           else if (idx == 19) id(raw_tou_gen_chg).publish_state(newval);
 
 
-  # ---- Сторінка параметрів №7: мережа (напруга/частота мережі й генератора, CT) ----
-  # K0=7, K1..K14 одним записом у 5000..5014:
-  #   K1=642 номінальна напруга (0.1В), K2=643 номінальна частота (0.01Гц), K3=644 макс. струм (0.01А),
-  #   K4=645 Uмереж.макс, K5=646 Uмереж.мін (0.1В), K6=647 Fмереж.макс, K7=648 Fмереж.мін (0.01Гц),
-  #   K8=649 Fген.макс, K9=650 Fген.мін (0.01Гц), K10=652 Uген.макс, K11=653 Uген.мін (0.1В),
-  #   K12=2733 слово керування мережею (передаємо як є), K13=2735 макс. потужність мережі (0.1кВт),
-  #   K14=708 коефіцієнт зовнішнього CT.
-  # УВАГА: ці регістри лежать у блоці інвертора, а сторінка пишеться через jup_dc_writer (як сторінки 3..6).
-  # Якщо запис не проходить - спробуйте jup_inv_writer.
+  # ---- Parameter page No. 7: grid (grid/generator voltage and frequency, CT) ----
+  # K0=7, K1..K14 in a single write to 5000..5014:
+  #   K1=642 nominal voltage (0.1V), K2=643 nominal frequency (0.01Hz), K3=644 max current (0.01A),
+  #   K4=645 Ugrid.max, K5=646 Ugrid.min (0.1V), K6=647 Fgrid.max, K7=648 Fgrid.min (0.01Hz),
+  #   K8=649 Fgen.max, K9=650 Fgen.min (0.01Hz), K10=652 Ugen.max, K11=653 Ugen.min (0.1V),
+  #   K12=2733 grid control word (passed as is), K13=2735 max grid power (0.1kW),
+  #   K14=708 external CT coefficient.
+  # WARNING: these registers are in the inverter block, but the page is written via jup_dc_writer (like pages 3..6).
+  # If the write fails - try jup_inv_writer.
   - id: jup_write_ac_page
     mode: queued
     parameters:
@@ -1587,7 +1587,7 @@ script:
           };
           cur[idx] = newval;
           uint16_t regs[15];
-          regs[0] = 7;  // K0 = номер сторінки
+          regs[0] = 7;  // K0 = page number
           for (int i = 0; i < 14; i++) {
             if (std::isnan(cur[i])) {
               ESP_LOGW("jup", "Page 7 not fully read yet (param %d) - write skipped", i + 1);
@@ -1598,13 +1598,13 @@ script:
           ESP_LOGI("jup", "Writing page 7: K%d = %.2f", idx + 1, newval);
           id(jup_dc_writer).write_multiple_registers(5000, regs);
 
-  # ---- Сторінка параметрів №8: порт генератора / Smart Load / AC Couple ----
-  # K0=8, K1..K15 одним записом у 5000..5015:
-  #   K1=701 тип порту, K2=702 режим Smart Load (0x05 / 0x50 / 0x55), K3=705 режим AC Couple (5=VF, 0=PQ),
-  #   K4=2736 макс. потужність генератора (0.1кВт, передаємо як є), K5=703 сигнал запуску генератора (0x5),
-  #   K6=3547 SL старт SOC, K7=3548 SL стоп SOC, K8=3549 SL старт U (0.01В), K9=3550 SL стоп U (0.01В),
-  #   K10=3551 SL старт PV (Вт), K11=3552 частота AC Couple (0.01Гц), K12=3553 AC старт SOC,
-  #   K13=3554 AC стоп SOC, K14=3557 AC старт U (0.01В), K15=3558 AC стоп U (0.01В).
+  # ---- Parameter page No. 8: generator port / Smart Load / AC Couple ----
+  # K0=8, K1..K15 in a single write to 5000..5015:
+  #   K1=701 port type, K2=702 Smart Load mode (0x05 / 0x50 / 0x55), K3=705 AC Couple mode (5=VF, 0=PQ),
+  #   K4=2736 max generator power (0.1kW, passed as is), K5=703 generator start signal (0x5),
+  #   K6=3547 SL start SOC, K7=3548 SL stop SOC, K8=3549 SL start U (0.01V), K9=3550 SL stop U (0.01V),
+  #   K10=3551 SL start PV (W), K11=3552 AC Couple frequency (0.01Hz), K12=3553 AC start SOC,
+  #   K13=3554 AC stop SOC, K14=3557 AC start U (0.01V), K15=3558 AC stop U (0.01V).
   - id: jup_write_gen_page
     mode: queued
     parameters:
@@ -1625,7 +1625,7 @@ script:
           };
           cur[idx] = newval;
           uint16_t regs[16];
-          regs[0] = 8;  // K0 = номер сторінки
+          regs[0] = 8;  // K0 = page number
           for (int i = 0; i < 15; i++) {
             if (std::isnan(cur[i])) {
               ESP_LOGW("jup", "Page 8 not fully read yet (param %d) - write skipped", i + 1);
@@ -1635,18 +1635,18 @@ script:
           }
           ESP_LOGI("jup", "Writing page 8: K%d = %.2f", idx + 1, newval);
           id(jup_dc_writer).write_multiple_registers(5000, regs);
-          // оновлюємо сирі слова, щоб select/switch одразу показали нове значення
+          // update the raw words so the select/switch immediately show the new value
           if (idx == 0) id(raw_gen_port).publish_state(newval);
           else if (idx == 1) id(raw_smart_mode).publish_state(newval);
           else if (idx == 2) id(raw_gen_mode).publish_state(newval);
           else if (idx == 4) id(raw_gen_sig).publish_state(newval);
 
-  # ---- Сторінка параметрів №1: батарея і ліміти PV ----
-  # K0=1, K1..K10 одним записом у 5000..5010:
-  #   K1=2642 Uбат.макс (0.01В), K2=2643 Uбат.мін (0.01В), K3=2644 макс. струм заряду (0.1А),
-  #   K4=2645 макс. струм розряду (0.1А, ВІД'ЄМНЕ, INT16), K5=2646 ємність (Ач),
-  #   K6=2647 PV1 Umax (0.1В), K7=2648 PV1 Imax (0.01А), K8=2649 PV2 Umax (0.1В), K9=2650 PV2 Imax (0.01А),
-  #   K10=2652 тип батареї (0x0005 Lithium, 0x0000 Use Bat V, 0x0050 Use Bat %).
+  # ---- Parameter page No. 1: battery and PV limits ----
+  # K0=1, K1..K10 in a single write to 5000..5010:
+  #   K1=2642 Ubat.max (0.01V), K2=2643 Ubat.min (0.01V), K3=2644 max charge current (0.1A),
+  #   K4=2645 max discharge current (0.1A, NEGATIVE, INT16), K5=2646 capacity (Ah),
+  #   K6=2647 PV1 Umax (0.1V), K7=2648 PV1 Imax (0.01A), K8=2649 PV2 Umax (0.1V), K9=2650 PV2 Imax (0.01A),
+  #   K10=2652 battery type (0x0005 Lithium, 0x0000 Use Bat V, 0x0050 Use Bat %).
   - id: jup_write_batt_page
     mode: queued
     parameters:
@@ -1663,7 +1663,7 @@ script:
           };
           cur[idx] = newval;
           uint16_t regs[11];
-          regs[0] = 1;  // K0 = номер сторінки
+          regs[0] = 1;  // K0 = page number
           for (int i = 0; i < 10; i++) {
             if (std::isnan(cur[i])) {
               ESP_LOGW("jup", "Page 1 not fully read yet (param %d) - write skipped", i + 1);
@@ -1681,7 +1681,7 @@ script:
 #  CONTROLS
 # ===========================================================================
 button:
-  # Регістр 15, Table 2-2: bit1..bit0 = 1 -> інвертор ON, 2 -> інвертор OFF
+  # Register 15, Table 2-2: bit1..bit0 = 1 -> inverter ON, 2 -> inverter OFF
   - platform: template
     name: "Inverter ON"
     icon: mdi:power
@@ -1691,7 +1691,7 @@ button:
           start_address: 15
           values: [0x0001]
 
-  # УВАГА: вимикає вихід інвертора (навантаження залишиться без живлення від нього)
+  # WARNING: turns off the inverter output (the load will be left without power from it)
   - platform: template
     name: "Inverter OFF"
     icon: mdi:power-off
@@ -1701,8 +1701,8 @@ button:
           start_address: 15
           values: [0x0002]
 
-  # Синхронізація годинника інвертора з Home Assistant (регістри 655..661).
-  # Дні тижня: 1=Пн ... 7=Нд (припущення, у документації не уточнено).
+  # Synchronizing the inverter clock with Home Assistant (registers 655..661).
+  # Days of the week: 1=Mon ... 7=Sun (assumption, not specified in the documentation).
   - platform: template
     name: "Sync Inverter Clock"
     icon: mdi:clock-check-outline
@@ -1724,8 +1724,8 @@ button:
           id(jup_inv_writer).write_multiple_registers(655, regs);
 
 switch:
-  # Слово 2732: 0xXXX5 = заряд від генератора, 0xXX5X = battery first
-  # Слово 2733: 0xXXX5 = заряд від мережі,     0xX1XX = AC peak shaving
+  # Word 2732: 0xXXX5 = charge from generator, 0xXX5X = battery first
+  # Word 2733: 0xXXX5 = charge from grid,      0xX1XX = AC peak shaving
   - platform: template
     name: "Grid Charging"
     icon: mdi:transmission-tower-import
@@ -1807,8 +1807,8 @@ switch:
           value: 0
 
 
-  # ---- Time of Use: головний вимикач і дозволи заряду за розкладом ----
-  # (прапорці записуються разом зі сторінкою 4 (SOC); значення слотів лишаються поточні)
+  # ---- Time of Use: master switch and charge permissions by schedule ----
+  # (flags are written together with page 4 (SOC); slot values stay as they currently are)
   - platform: template
     name: "Time of Use"
     icon: mdi:calendar-clock
@@ -1829,8 +1829,8 @@ switch:
           idx: 17
           newval: 0
 
-  # ---- Дозволи заряду для кожного з 9 слотів (як галочки Grid Chg En / Gen Chg En в додатку) ----
-  # Регістри 2677 (мережа) і 2678 (генератор): біт 0..8 = слот 1..9.
+  # ---- Charge permissions for each of the 9 slots (like the Grid Chg En / Gen Chg En checkboxes in the app) ----
+  # Registers 2677 (grid) and 2678 (generator): bit 0..8 = slot 1..9.
   - platform: template
     name: "TOU Grid Charge Slot 1"
     icon: mdi:transmission-tower-import
@@ -2191,7 +2191,7 @@ switch:
           idx: 19
           newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFEFF);'
 
-  # ---- Ліміт потужності з мережі (слово 2733: 0xXX5X = ліміт увімкнено) ----
+  # ---- Grid power limit (word 2733: 0xXX5X = limit enabled) ----
   - platform: template
     name: "Grid Power Limit"
     icon: mdi:transmission-tower-off
@@ -2213,8 +2213,8 @@ switch:
           value: 0
 
 
-  # ---- Порт генератора / Smart Load (сторінка 8) ----
-  # Слово 702: 0x05 = Smart Load живиться при наявності мережі, 0x50 = лише від батареї (за таблицею документації).
+  # ---- Generator port / Smart Load (page 8) ----
+  # Word 702: 0x05 = Smart Load is powered when the grid is present, 0x50 = battery only (per the documentation table).
   - platform: template
     name: "Smart Load On-Grid Always On"
     icon: mdi:power-plug
@@ -2271,7 +2271,7 @@ switch:
 
 
 number:
-  # Регістр 670 - пряме читання/запис (функція 0x10)
+  # Register 670 - direct read/write (function 0x10)
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Grid Reconnect Time"
@@ -2285,7 +2285,7 @@ number:
     mode: box
     entity_category: config
 
-  # ---- Сторінка параметрів №3: ліміти мережі/генератора (читання 2655..2667, запис через script) ----
+  # ---- Parameter page No. 3: grid/generator limits (read 2655..2667, write via script) ----
   - platform: modbus_controller
     modbus_controller_id: dc_slow
     id: p3_grid_dis_pmax
@@ -2508,10 +2508,10 @@ number:
       return {};
 
   # ===== Time of Use =====
-  # Часи переходів T1..T8 - це елементи "datetime" (вибір часу ГГ:ХХ), див. секцію DATETIME нижче.
-  # Слот 1 = 00:00..T1, слот 2 = T1..T2, ... слот 9 = T8..23:59. Часи мають іти по зростанню.
+  # Transition times T1..T8 are "datetime" elements (HH:MM time selection), see the DATETIME section below.
+  # Slot 1 = 00:00..T1, slot 2 = T1..T2, ... slot 9 = T8..23:59. Times must be ascending.
 
-  # -- сторінка 4: цільовий SOC для слотів --
+  # -- page 4: target SOC for slots --
   - platform: modbus_controller
     modbus_controller_id: dc_tou
     id: tou_soc1
@@ -2657,7 +2657,7 @@ number:
       id(tou_soc9).publish_state(x);
       return {};
 
-  # -- сторінка 5: цільова напруга батареї (вимкнено за замовчуванням; запис перемикає інвертор у режим Voltage, як вкладка в додатку) --
+  # -- page 5: target battery voltage (disabled by default; writing switches the inverter to Voltage mode, like the tab in the app) --
   - platform: modbus_controller
     modbus_controller_id: dc_tou
     id: tou_v1
@@ -2821,7 +2821,7 @@ number:
       id(tou_v9).publish_state(x);
       return {};
 
-  # -- сторінка 6: потужність заряду за слотами (запис слота перемикає інвертор у режим Power, як вкладка в додатку) --
+  # -- page 6: charge power by slot (writing a slot switches the inverter to Power mode, like the tab in the app) --
   - platform: modbus_controller
     modbus_controller_id: dc_tou
     id: tou_p1
@@ -2967,8 +2967,8 @@ number:
       id(tou_p9).publish_state(x);
       return {};
 
-  # ===== Ліміти потужності (прямий запис, як у Grid Reconnect Time) =====
-  # 2735/2736: у регістрі 1 = 100 Вт, показуємо в кВт
+  # ===== Power limits (direct write, like Grid Reconnect Time) =====
+  # 2735/2736: in the register 1 = 100 W, shown in kW
   - platform: modbus_controller
     modbus_controller_id: dc_tou
     id: grid_max_power_kw
@@ -3012,7 +3012,7 @@ number:
     step: 1
     mode: box
     entity_category: config
-  # Максимальна потужність продажу в мережу (блок інвертора, регістр 700)
+  # Maximum grid sell power (inverter block, register 700)
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Max Sell Power"
@@ -3027,7 +3027,7 @@ number:
     entity_category: config
     disabled_by_default: true
 
-  # ===== Налаштування мережі (сторінка 7; читання 642..653 та 708, запис через script) =====
+  # ===== Grid settings (page 7; read 642..653 and 708, write via script) =====
   - platform: modbus_controller
     modbus_controller_id: inv_slow
     id: p7_inv_v_rated
@@ -3239,7 +3239,7 @@ number:
       id(p7_ct_ratio).publish_state(x);
       return {};
 
-  # ===== Smart Load / AC Couple (сторінка 8; читання 3547..3558, запис через script) =====
+  # ===== Smart Load / AC Couple (page 8; read 3547..3558, write via script) =====
   - platform: modbus_controller
     modbus_controller_id: dc_slow
     id: p8_sl_on_soc
@@ -3411,8 +3411,8 @@ number:
       id(p8_ac_off_v).publish_state(x);
       return {};
 
-  # ===== Батарея і ліміти PV (сторінка 1; читання 2642..2650, запис через script) =====
-  # УВАГА: неправильні значення можуть зашкодити батареї - тому все вимкнено за замовчуванням.
+  # ===== Battery and PV limits (page 1; read 2642..2650, write via script) =====
+  # WARNING: wrong values can damage the battery - so everything is disabled by default.
   - platform: modbus_controller
     modbus_controller_id: dc_slow
     id: p1_bat_v_max
@@ -3579,8 +3579,8 @@ number:
 #  SELECTS
 # ===========================================================================
 select:
-  # Режим роботи (регістр 6, Table 2-1). Небезпечні режими Standby / DC / AC voltage source
-  # навмисно не додані. Для Time of Use потрібен режим 6 або 10.
+  # Operating mode (register 6, Table 2-1). The dangerous modes Standby / DC / AC voltage source
+  # are intentionally not added. Time of Use requires mode 6 or 10.
   - platform: modbus_controller
     modbus_controller_id: inv_fast
     name: "Working Mode Control"
@@ -3595,7 +3595,7 @@ select:
       "Auto on/off-grid, power control": 8
       "Auto on/off-grid, time-based power control": 10
 
-  # Режим віддачі в мережу (регістр 2083)
+  # Grid feed-in mode (register 2083)
   - platform: modbus_controller
     modbus_controller_id: dc_tou
     name: "Grid Export Mode"
@@ -3610,7 +3610,7 @@ select:
       "Zero export to grid port": 2
       "Zero export to CT": 3
 
-  # ---- Тип порту генератора (регістр 701, сторінка 8) ----
+  # ---- Generator port type (register 701, page 8) ----
   - platform: template
     name: "Generator Port Type"
     icon: mdi:engine
@@ -3632,7 +3632,7 @@ select:
           idx: 0
           newval: !lambda 'return x == "Smart load" ? 5.0f : (x == "AC couple" ? 10.0f : 0.0f);'
 
-  # ---- Режим AC Couple (регістр 705, сторінка 8): VF або PQ ----
+  # ---- AC Couple mode (register 705, page 8): VF or PQ ----
   - platform: template
     name: "AC Couple Mode"
     icon: mdi:sine-wave
@@ -3650,7 +3650,7 @@ select:
           idx: 2
           newval: !lambda 'return x == "VF" ? 5.0f : 0.0f;'
 
-  # ---- Тип батареї (регістр 2652, сторінка 1). Значення за таблицею "Parameter settings" ----
+  # ---- Battery type (register 2652, page 1). Values per the "Parameter settings" table ----
   - platform: template
     name: "Battery Type"
     icon: mdi:battery-unknown
@@ -3675,7 +3675,7 @@ select:
 
 
 # ===========================================================================
-#  DATETIME (Time of Use: початок і кінець слотів у форматі ГГ:ХХ)
+#  DATETIME (Time of Use: start and end of slots in HH:MM format)
 # ===========================================================================
 datetime:
   - platform: template
@@ -3846,8 +3846,8 @@ datetime:
           page: 4
           idx: 7
           newval: !lambda 'return x.hour * 100 + x.minute;'
-  # ---- Початок слотів 2..9. Інвертор має лише 8 меж: початок слота N = кінець слота N-1 (той самий регістр),
-  # тому зміна "Slot N Start" змінює й "Slot N-1 End". Початок слота 1 (00:00) і кінець слота 9 (23:59) фіксовані. ----
+  # ---- Start of slots 2..9. The inverter has only 8 boundaries: start of slot N = end of slot N-1 (the same register),
+  # so changing "Slot N Start" also changes "Slot N-1 End". The start of slot 1 (00:00) and the end of slot 9 (23:59) are fixed. ----
   - platform: template
     type: time
     id: tou_start2
@@ -4019,7 +4019,7 @@ datetime:
 
 
 # ===========================================================================
-#  TIME (для синхронізації годинника інвертора)
+#  TIME (for synchronizing the inverter clock)
 # ===========================================================================
 time:
   - platform: homeassistant
