@@ -1,0 +1,4027 @@
+substitutions:
+  name: jup-inverter
+  friendly_name: "Chisage JUP"
+  # Modbus-адреса блоку інвертора (за документацією - непарне число 0..63; зазвичай 1).
+  inverter_address: "1"
+  # Modbus-адреса DC-блоку (регістри 2000+, налаштування батареї).
+  # Якщо відповідає та сама адреса - залиште як є. Якщо регістри 2000+ дають
+  # таймаути, спробуйте парну адресу (наприклад "2") - у документації DC-блок парний.
+  dc_address: "1"
+  # Верхня межа слайдерів TOU Power Slot (Вт). За документацією діапазон 0..12000 (аркуш Parameter Group), у прикладі теж 12000.
+  tou_max_power: "6000"
+  # Мінімальна виміряна напруга (В), з якої мережа / генератор вважаються присутніми
+  # (для сутностей Grid Faults, Generator Faults, Grid Present, Generator Present).
+  ac_present_voltage: "10"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  variant: esp32
+  framework:
+    type: esp-idf
+    advanced:
+      minimum_chip_revision: "3.1"
+      sram1_as_iram: true
+
+logger:
+
+api:
+  encryption:
+    key: !secret jup_inverter__encryption_key
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: jup-6g2-inverte Fallback Hotspot
+    password: !secret jup_inverter__ap_password
+captive_portal:
+
+uart:
+  id: uart_rs485
+  tx_pin: GPIO22
+  rx_pin: GPIO21
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+modbus:
+  id: modbus_rs485
+  uart_id: uart_rs485
+  flow_control_pin: GPIO17
+  send_wait_time: 1000ms
+  turnaround_time: 150ms
+
+modbus_controller:
+  # Швидкі дані інвертора (потужності, напруги, статуси)
+  - id: inv_fast
+    address: ${inverter_address}
+    modbus_id: modbus_rs485
+    update_interval: 10s
+    offline_skip_updates: 5
+  # Швидкі дані DC-блоку (аварії, стан)
+  - id: dc_fast
+    address: ${dc_address}
+    modbus_id: modbus_rs485
+    update_interval: 10s
+    offline_skip_updates: 5
+  # Повільні дані DC-блоку (лічильники енергії, налаштування)
+  - id: dc_slow
+    address: ${dc_address}
+    modbus_id: modbus_rs485
+    update_interval: 60s
+    offline_skip_updates: 5
+  # Time of Use: розклад (регістри 2669..2734) - змінюється рідко
+  - id: dc_tou
+    address: ${dc_address}
+    modbus_id: modbus_rs485
+    update_interval: 120s
+    offline_skip_updates: 5
+  # Годинник інвертора (регістри 655..661, блок інвертора)
+  - id: inv_slow
+    address: ${inverter_address}
+    modbus_id: modbus_rs485
+    update_interval: 60s
+    offline_skip_updates: 5
+
+# Writer-и для скриптів запису (lambda hook, лише запис)
+modbus_client:
+  - id: jup_inv_writer
+    address: ${inverter_address}
+  - id: jup_dc_writer
+    address: ${dc_address}
+
+
+# ===========================================================================
+#  SENSORS
+# ===========================================================================
+# Остання сторінка Time of Use, у яку ви писали значення слотів (4 = SOC, 5 = Voltage, 6 = Power).
+# Інвертор визначає режим TOU за номером останньої записаної сторінки, тому зміна часу чи
+# дозволів заряду пишеться тією ж сторінкою і не перемикає режим. Окремого вибору "TOU Type" більше немає.
+globals:
+  - id: tou_page
+    type: int
+    restore_value: true
+    initial_value: '4'
+
+sensor:
+
+  # ---- PV (сонячні панелі) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV1 Voltage"
+    address: 38
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV1 Current"
+    address: 39
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV2 Voltage"
+    address: 40
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV2 Current"
+    address: 41
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV1 Power"
+    address: 47
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV2 Power"
+    address: 48
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "PV Energy Today"
+    address: 2065
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "PV Energy Total"
+    address: 2066
+    register_type: holding
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # ---- Батарея ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Battery Voltage"
+    address: 42
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Battery Current"
+    address: 43
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Battery SOC"
+    address: 45
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Battery Power"
+    address: 46
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Battery Temperature"
+    address: 55
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    name: "Battery Heatsink Temperature"
+    entity_category: diagnostic
+    address: 2055
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Battery Charge Today"
+    address: 2068
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Battery Charge Total"
+    address: 2069
+    register_type: holding
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Battery Discharge Today"
+    address: 2071
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Battery Discharge Total"
+    address: 2072
+    register_type: holding
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # ---- Мережа (Grid) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: grid_voltage_v
+    name: "Grid Voltage"
+    address: 30
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Grid Current"
+    address: 31
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Grid Frequency"
+    address: 35
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    device_class: frequency
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Grid Power"
+    address: 69
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "CT Power"
+    address: 73
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Grid Import Today"
+    address: 2074
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Grid Import Total"
+    address: 2075
+    register_type: holding
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Grid Export Today"
+    address: 2077
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Grid Export Total"
+    address: 2078
+    register_type: holding
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Grid Reactive Power"
+    address: 70
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "var"
+    device_class: reactive_power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "External CT Current"
+    address: 61
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    disabled_by_default: true
+    filters:
+      - multiply: 0.01
+
+  # ---- Генератор ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: generator_voltage_v
+    name: "Generator Voltage"
+    address: 32
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Generator Current"
+    address: 33
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Generator Frequency"
+    address: 36
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    device_class: frequency
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Generator Power"
+    address: 71
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+
+  # ---- Навантаження (Load / UPS / Smart / Home) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Load Voltage"
+    address: 28
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Load Current"
+    address: 29
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Load Frequency"
+    address: 34
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    device_class: frequency
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "UPS Load Power"
+    address: 67
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Smart Load Power"
+    address: 68
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Home Load Power"
+    address: 75
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Load Energy Today"
+    address: 2080
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    name: "Load Energy Total"
+    address: 2081
+    register_type: holding
+    value_type: U_DWORD
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # ---- Інвертор (стан, температури, діагностика) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inverter Voltage"
+    entity_category: diagnostic
+    address: 26
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inverter Current"
+    entity_category: diagnostic
+    address: 27
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Bus Voltage"
+    entity_category: diagnostic
+    address: 37
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inverter Temperature"
+    address: 56
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inverter Active Power"
+    address: 65
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Insulation Resistance"
+    address: 51
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "kΩ"
+    state_class: measurement
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Leakage Current"
+    address: 59
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "mA"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 0
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inverter Reactive Power"
+    address: 66
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: "var"
+    device_class: reactive_power
+    state_class: measurement
+    accuracy_decimals: 0
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Transformer Current"
+    address: 64
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    disabled_by_default: true
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inductor Current"
+    address: 58
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    entity_category: diagnostic
+    disabled_by_default: true
+    filters:
+      - multiply: 0.01
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    name: "Inverter Heatsink Temperature"
+    address: 2056
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+  # ---- Аварії та попередження (загальні) ----
+  - platform: template
+    name: "Active Warnings Count"
+    icon: mdi:counter
+    entity_category: diagnostic
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(raw_alarm1).state) || std::isnan(id(raw_alarm2).state)) return {};
+      return (float) (__builtin_popcount((uint16_t) id(raw_alarm1).state) + __builtin_popcount((uint16_t) id(raw_alarm2).state));
+  - platform: template
+    name: "Active Faults Count"
+    icon: mdi:counter
+    entity_category: diagnostic
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(raw_fault1).state) || std::isnan(id(raw_fault2).state)) return {};
+      return (float) (__builtin_popcount((uint16_t) id(raw_fault1).state) + __builtin_popcount((uint16_t) id(raw_fault2).state));
+
+  # ---- Діагностика ESP ----
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+    entity_category: diagnostic
+
+  # ---- Службові регістри (сирі слова; для text/binary-сенсорів і скриптів запису) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: raw_working_mode
+    name: "Working Mode raw"
+    address: 6
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    id: raw_machine_state
+    name: "Machine State raw"
+    address: 2058
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    id: raw_alarm1
+    name: "Alarm word 1 raw"
+    address: 2061
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    id: raw_alarm2
+    name: "Alarm word 2 raw"
+    address: 2062
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    id: raw_fault1
+    name: "Fault word 1 raw"
+    address: 2063
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    id: raw_fault2
+    name: "Fault word 2 raw"
+    address: 2064
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: raw_gen_ctrl
+    name: "Generator control word raw"
+    address: 2732
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: raw_grid_ctrl
+    name: "Grid control word raw"
+    address: 2733
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t1
+    name: "TOU time 1 raw (HHMM)"
+    address: 2669
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t2
+    name: "TOU time 2 raw (HHMM)"
+    address: 2670
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t3
+    name: "TOU time 3 raw (HHMM)"
+    address: 2671
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t4
+    name: "TOU time 4 raw (HHMM)"
+    address: 2672
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t5
+    name: "TOU time 5 raw (HHMM)"
+    address: 2673
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t6
+    name: "TOU time 6 raw (HHMM)"
+    address: 2674
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t7
+    name: "TOU time 7 raw (HHMM)"
+    address: 2675
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_t8
+    name: "TOU time 8 raw (HHMM)"
+    address: 2676
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: raw_tou_enable
+    name: "TOU enable raw"
+    address: 2734
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: raw_tou_grid_chg
+    name: "TOU grid charge flag raw"
+    address: 2677
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: raw_tou_gen_chg
+    name: "TOU generator charge flag raw"
+    address: 2678
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_year
+    name: "Inverter clock Year raw"
+    address: 655
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_month
+    name: "Inverter clock Month raw"
+    address: 656
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_wday
+    name: "Inverter clock Weekday raw"
+    address: 657
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_day
+    name: "Inverter clock Day raw"
+    address: 658
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_hour
+    name: "Inverter clock Hour raw"
+    address: 659
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_min
+    name: "Inverter clock Minute raw"
+    address: 660
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_clk_sec
+    name: "Inverter clock Second raw"
+    address: 661
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: raw_sw0
+    name: "Status word 0 raw"
+    address: 0
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: raw_sw1
+    name: "Status word 1 raw"
+    address: 1
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: raw_sw2
+    name: "Status word 2 raw"
+    address: 2
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: raw_sw3
+    name: "Status word 3 raw"
+    address: 3
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    id: raw_sw4
+    name: "Status word 4 raw"
+    address: 4
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    entity_category: diagnostic
+    disabled_by_default: true
+
+
+
+  # ---- Налаштування мережі / генератора (сирі слова інверторного блоку, регістри 701..705) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_gen_port
+    name: "Generator port type raw"
+    address: 701
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_smart_mode
+    name: "Smart load mode raw"
+    address: 702
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_gen_sig
+    name: "Generator start signal raw"
+    address: 703
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: raw_gen_mode
+    name: "AC couple mode raw"
+    address: 705
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: raw_bat_mode
+    name: "Battery type raw"
+    address: 2652
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    internal: true
+
+
+# ===========================================================================
+#  BINARY SENSORS (біти статусних слів: Table 1-3 / 1-5)
+# ===========================================================================
+binary_sensor:
+
+  # ---- PV (сонячні панелі) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV1 Operating"
+    address: 2
+    register_type: holding
+    bitmask: 0x0001
+    device_class: running
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "PV2 Operating"
+    address: 2
+    register_type: holding
+    bitmask: 0x0002
+    device_class: running
+
+  # ---- Батарея ----
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    name: "BMS Charge Enabled"
+    address: 2014
+    register_type: holding
+    bitmask: 0x8000
+    disabled_by_default: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    name: "BMS Discharge Enabled"
+    address: 2014
+    register_type: holding
+    bitmask: 0x4000
+    disabled_by_default: true
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    name: "BMS Communication OK"
+    address: 2014
+    register_type: holding
+    bitmask: 0x0100
+    device_class: connectivity
+    entity_category: diagnostic
+    disabled_by_default: true
+
+  # ---- Мережа (Grid) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Grid Relay Closed"
+    address: 2
+    register_type: holding
+    bitmask: 0x8000
+  - platform: template
+    name: "Grid Present"
+    device_class: power
+    lambda: |-
+      if (std::isnan(id(grid_voltage_v).state)) return {};
+      return id(grid_voltage_v).state >= ${ac_present_voltage};
+
+  # ---- Генератор ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Generator Relay Closed"
+    address: 2
+    register_type: holding
+    bitmask: 0x0800
+  - platform: template
+    name: "Generator Present"
+    device_class: power
+    lambda: |-
+      if (std::isnan(id(generator_voltage_v).state)) return {};
+      return id(generator_voltage_v).state >= ${ac_present_voltage};
+
+  # ---- Навантаження (Load / UPS / Smart / Home) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Smart Load On"
+    address: 2
+    register_type: holding
+    bitmask: 0x0200
+
+  # ---- Інвертор (стан, температури, діагностика) ----
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "DC Normal Operation"
+    address: 2
+    register_type: holding
+    bitmask: 0x0020
+    device_class: running
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Inverter Module Online"
+    address: 90
+    register_type: holding
+    bitmask: 0x0001
+    device_class: connectivity
+    entity_category: diagnostic
+  - platform: modbus_controller
+    modbus_controller_id: dc_fast
+    name: "DC Module Online"
+    address: 2090
+    register_type: holding
+    bitmask: 0x0001
+    device_class: connectivity
+    entity_category: diagnostic
+
+  # ---- Аварії та попередження (загальні) ----
+  - platform: template
+    name: "Warning Active"
+    device_class: problem
+    lambda: |-
+      if (std::isnan(id(raw_alarm1).state) || std::isnan(id(raw_alarm2).state)) return {};
+      return (((uint16_t) id(raw_alarm1).state) | ((uint16_t) id(raw_alarm2).state)) != 0;
+  - platform: template
+    name: "Fault Active"
+    device_class: problem
+    lambda: |-
+      if (std::isnan(id(raw_fault1).state) || std::isnan(id(raw_fault2).state)) return {};
+      return (((uint16_t) id(raw_fault1).state) | ((uint16_t) id(raw_fault2).state)) != 0;
+
+
+# ===========================================================================
+#  TEXT SENSORS
+# ===========================================================================
+text_sensor:
+
+  # ---- PV (сонячні панелі) ----
+  - platform: template
+    name: "PV Status"
+    icon: mdi:solar-panel
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(raw_sw3).state)) return {};
+      static const char *const T0[16] = {"PV1 low voltage", nullptr, "PV2 low voltage", "PV hardware overcurrent", "PV1 overvoltage", nullptr, nullptr, "PV2 overvoltage", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+      const uint16_t w[1] = {(uint16_t) id(raw_sw3).state};
+      const char *const *T[1] = {T0};
+      std::string out;
+      for (int k = 0; k < 1; k++) {
+        for (int b = 0; b < 16; b++) {
+          if (((w[k] >> b) & 1) == 0 || T[k][b] == nullptr) continue;
+          if (!out.empty()) out += ", ";
+          out += T[k][b];
+        }
+      }
+      if (out.empty()) return std::string("Normal");
+      if (out.size() > 250) out = out.substr(0, 247) + "...";
+      return out;
+
+  # ---- Батарея ----
+  - platform: template
+    name: "Battery Faults"
+    icon: mdi:battery-alert
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(raw_sw1).state)) return {};
+      static const char *const T0[16] = {"Battery low voltage", "Battery overvoltage", nullptr, "DC hardware overcurrent", nullptr, nullptr, "Low-voltage DC overvoltage", nullptr, "Bus overvoltage 1", "Bus undervoltage", nullptr, "DC hardware overcurrent 1", "Bus overvoltage 2", nullptr, nullptr, nullptr};
+      const uint16_t w[1] = {(uint16_t) id(raw_sw1).state};
+      const char *const *T[1] = {T0};
+      std::string out;
+      for (int k = 0; k < 1; k++) {
+        for (int b = 0; b < 16; b++) {
+          if (((w[k] >> b) & 1) == 0 || T[k][b] == nullptr) continue;
+          if (!out.empty()) out += ", ";
+          out += T[k][b];
+        }
+      }
+      if (out.empty()) return std::string("No faults");
+      if (out.size() > 250) out = out.substr(0, 247) + "...";
+      return out;
+
+  # ---- Мережа (Grid) ----
+  - platform: template
+    name: "Grid Faults"
+    icon: mdi:transmission-tower-off
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(grid_voltage_v).state)) return {};
+      auto u = [](sensor::Sensor *s) -> uint16_t { return std::isnan(s->state) ? 0 : (uint16_t) s->state; };
+      std::string out;
+      auto add = [&](bool c, const char *t) { if (c) { if (!out.empty()) out += ", "; out += t; } };
+      const uint16_t s4 = u(id(raw_sw4));
+      const uint16_t a1 = u(id(raw_alarm1)), a2 = u(id(raw_alarm2)), f2 = u(id(raw_fault2));
+      (void) s4; (void) a1; (void) a2; (void) f2;
+      if (id(grid_voltage_v).state < ${ac_present_voltage}) return std::string("No grid");
+      add((s4 & 0x2000) != 0, "Anti-islanding frequency anomaly");
+      add((s4 & 0x0020) != 0, "Anti-islanding frequency anomaly");
+      add((s4 & 0x0400) != 0, "Grid frequency abnormal");
+      add((s4 & 0x0200) != 0, "Grid voltage amplitude abnormal");
+      // Напруга мережі - лише за прапорцями інвертора, без порівняння з виміряною напругою.
+      // Біт 7 (W08) = занижена напруга; біт 15 (W16) = вихід за межі в будь-який бік (напрямок невідомий).
+      // Якщо встановлені обидва, показуємо точніший "Grid low voltage", щоб не дублювати.
+      const bool v_low = (a1 & 0x0080) != 0;
+      add(v_low, "Grid low voltage");
+      add(!v_low && (a1 & 0x8000) != 0, "Grid over/under voltage");
+      add((a2 & 0x0001) != 0, "Grid phase sequence error");
+      add((a2 & 0x0002) != 0, "Grid over/under frequency");
+      add((f2 & 0x0080) != 0, "Grid current overload");
+      add((f2 & 0x0800) != 0, "AC backfeed");
+      if (out.empty()) return std::string("No faults");
+      if (out.size() > 250) out = out.substr(0, 247) + "...";
+      return out;
+
+  # ---- Генератор ----
+  - platform: template
+    name: "Generator Faults"
+    icon: mdi:engine-off
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(generator_voltage_v).state)) return {};
+      auto u = [](sensor::Sensor *s) -> uint16_t { return std::isnan(s->state) ? 0 : (uint16_t) s->state; };
+      std::string out;
+      auto add = [&](bool c, const char *t) { if (c) { if (!out.empty()) out += ", "; out += t; } };
+      const uint16_t s4 = u(id(raw_sw4));
+      const uint16_t a1 = u(id(raw_alarm1)), a2 = u(id(raw_alarm2)), f2 = u(id(raw_fault2));
+      (void) s4; (void) a1; (void) a2; (void) f2;
+      if (id(generator_voltage_v).state < ${ac_present_voltage}) return std::string("No generator");
+      add((s4 & 0x0004) != 0, "Generator frequency abnormal");
+      add((s4 & 0x0002) != 0, "Generator voltage amplitude abnormal");
+      add((a1 & 0x0100) != 0, "Generator low voltage");
+      add((a2 & 0x0004) != 0, "Generator over/under voltage");
+      add((a2 & 0x0008) != 0, "Generator phase sequence error");
+      add((a2 & 0x0010) != 0, "Generator over/under frequency");
+      add((f2 & 0x0100) != 0, "Generator current overload");
+      if (out.empty()) return std::string("No faults");
+      if (out.size() > 250) out = out.substr(0, 247) + "...";
+      return out;
+
+  # ---- Інвертор (стан, температури, діагностика) ----
+  - platform: template
+    name: "Working Mode"
+    update_interval: 10s
+    lambda: |-
+      float v = id(raw_working_mode).state;
+      if (std::isnan(v)) return {};
+      switch ((int) v) {
+        case 0: return std::string("Standby");
+        case 1: return std::string("DC voltage source");
+        case 2: return std::string("AC voltage source");
+        case 4: return std::string("Power control");
+        case 6: return std::string("Time-based power control");
+        case 7: return std::string("PQ run");
+        case 8: return std::string("Auto on/off-grid, power control");
+        case 10: return std::string("Auto on/off-grid, time-based power control");
+        default: return std::string("Mode ") + std::to_string((int) v);
+      }
+  - platform: template
+    name: "Machine State"
+    update_interval: 10s
+    lambda: |-
+      float v = id(raw_machine_state).state;
+      if (std::isnan(v)) return {};
+      switch ((int) v) {
+        case 0: return std::string("Standby");
+        case 1: return std::string("Self-test");
+        case 2: return std::string("Normal");
+        case 3: return std::string("Alarm");
+        case 4: return std::string("Fault");
+        case 5: return std::string("Shutdown");
+        default: return std::string("State ") + std::to_string((int) v);
+      }
+  - platform: template
+    name: "Inverter Clock"
+    icon: mdi:clock-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      sensor::Sensor *c[6] = {id(raw_clk_year), id(raw_clk_month), id(raw_clk_day),
+                              id(raw_clk_hour), id(raw_clk_min), id(raw_clk_sec)};
+      int v[6];
+      for (int i = 0; i < 6; i++) {
+        if (std::isnan(c[i]->state)) return {};
+        v[i] = (int) c[i]->state;
+      }
+      char buf[32];
+      snprintf(buf, sizeof(buf), "20%02d-%02d-%02d %02d:%02d:%02d", v[0], v[1], v[2], v[3], v[4], v[5]);
+      return std::string(buf);
+  - platform: template
+    name: "Inverter Faults"
+    icon: mdi:flash-alert
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(raw_sw0).state)) return {};
+      static const char *const T0[16] = {"Load voltage abnormal", "Bus overvoltage", "AC software overcurrent", "AC hardware overcurrent", "Over temperature", "Phase lock abnormal", nullptr, "Self-test failed", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+      const uint16_t w[1] = {(uint16_t) id(raw_sw0).state};
+      const char *const *T[1] = {T0};
+      std::string out;
+      for (int k = 0; k < 1; k++) {
+        for (int b = 0; b < 16; b++) {
+          if (((w[k] >> b) & 1) == 0 || T[k][b] == nullptr) continue;
+          if (!out.empty()) out += ", ";
+          out += T[k][b];
+        }
+      }
+      if (out.empty()) return std::string("No faults");
+      if (out.size() > 250) out = out.substr(0, 247) + "...";
+      return out;
+
+  # ---- Аварії та попередження (загальні) ----
+  - platform: template
+    name: "Active Faults"
+    icon: mdi:alert-octagon
+    update_interval: 10s
+    lambda: |-
+      if (std::isnan(id(raw_fault1).state) || std::isnan(id(raw_fault2).state)) return {};
+      static const char *const T0[16] = {"Battery reverse polarity", "Permanent insulation resistance failure", "EEPROM read error", "EEPROM write error", "Battery soft start failed", "DC hardware overcurrent", "DC software overcurrent", "Auxiliary power supply failure", "IGBT fault", "Fault word 1 bit 9 (reserved)", "AC main contactor error", "AC auxiliary contactor error", "AC hardware overcurrent", "AC software overcurrent", "GFCI (RCD) leakage current", "Three-phase overcurrent"};
+      static const char *const T1[16] = {"DC bus unbalance", "Load over/under voltage", "Fault word 2 bit 2 (reserved)", "Fault word 2 bit 3 (reserved)", "Fault word 2 bit 4 (reserved)", "Fault word 2 bit 5 (reserved)", "Fault word 2 bit 6 (reserved)", "Grid current overload", "Generator current overload", "DC bus overvoltage", "DC bus undervoltage", "AC backfeed", "Heatsink over-temperature", "PV arc fault", "PV1 reverse connection", "PV2 reverse connection"};
+      const uint16_t w[2] = {(uint16_t) id(raw_fault1).state, (uint16_t) id(raw_fault2).state};
+      const char *const *T[2] = {T0, T1};
+      std::string out;
+      for (int k = 0; k < 2; k++) {
+        for (int b = 0; b < 16; b++) {
+          if (((w[k] >> b) & 1) == 0 || T[k][b] == nullptr) continue;
+          if (!out.empty()) out += ", ";
+          out += T[k][b];
+        }
+      }
+      if (out.empty()) return std::string("No faults");
+      if (out.size() > 250) out = out.substr(0, 247) + "...";
+      return out;
+
+
+# ===========================================================================
+#  SCRIPTS (запис параметрів)
+# ===========================================================================
+script:
+  # Сторінка параметрів №3 (мережа/генератор: ліміти заряду та розряду).
+  # Інвертор приймає сторінку ЦІЛКОМ: K0 (=номер сторінки) + K1..K13 одним записом
+  # у регістри 5000..5013. Тому змінюємо одне значення, решту беремо з поточних.
+  - id: jup_write_grid_page
+    mode: queued
+    parameters:
+      idx: int
+      newval: float
+    then:
+      - lambda: |-
+          static const float scale[13] = {1.0f, 1.0f, 1.0f, 0.01f, 0.01f, 0.1f, 0.1f,
+                                          1.0f, 1.0f, 1.0f, 0.01f, 0.01f, 1.0f};
+          if (idx < 0 || idx > 12) return;
+          float cur[13] = {
+            id(p3_grid_dis_pmax).state, id(p3_grid_dis_soc_min).state, id(p3_grid_chg_soc_max).state,
+            id(p3_grid_dis_vmin).state, id(p3_grid_chg_vmax).state, id(p3_grid_chg_imax).state,
+            id(p3_gen_chg_imax).state, id(p3_gen_dis_pmax).state, id(p3_gen_dis_soc_min).state,
+            id(p3_gen_chg_soc_max).state, id(p3_gen_dis_vmin).state, id(p3_gen_chg_vmax).state,
+            id(p3_grid_chg_prohibit_soc).state
+          };
+          cur[idx] = newval;
+          uint16_t regs[14];
+          regs[0] = 3;  // K0 = номер сторінки
+          for (int i = 0; i < 13; i++) {
+            if (std::isnan(cur[i])) {
+              ESP_LOGW("jup", "Page 3 not fully read yet (param %d) - write skipped", i + 1);
+              return;
+            }
+            regs[i + 1] = (uint16_t) lroundf(cur[i] / scale[i]);
+          }
+          ESP_LOGI("jup", "Writing page 3: K%d = %.2f", idx + 1, newval);
+          id(jup_dc_writer).write_multiple_registers(5000, regs);
+
+  # Запис прапорців у спільні слова 2732 (генератор) / 2733 (мережа):
+  # читаємо поточне слово, міняємо лише потрібні біти, пишемо назад.
+  - id: jup_write_ctrl_word
+    mode: queued
+    parameters:
+      addr: int
+      mask: int
+      value: int
+    then:
+      - lambda: |-
+          sensor::Sensor *src = (addr == 2732) ? id(raw_gen_ctrl) : id(raw_grid_ctrl);
+          if (std::isnan(src->state)) {
+            ESP_LOGW("jup", "Control word %d not read yet - write skipped", addr);
+            return;
+          }
+          uint16_t cur = (uint16_t) src->state;
+          uint16_t v = (uint16_t) ((cur & ~((uint16_t) mask)) | ((uint16_t) value));
+          uint16_t regs[1] = {v};
+          ESP_LOGI("jup", "Reg %d: 0x%04X -> 0x%04X", addr, cur, v);
+          id(jup_dc_writer).write_multiple_registers(addr, regs);
+          src->publish_state(v);
+
+
+  # Time of Use, сторінки 4 (SOC) / 5 (Voltage) / 6 (Power).
+  # Інвертор приймає сторінку ЦІЛКОМ: K0 (=номер сторінки) + K1..K20 одним записом
+  # у регістри 5000..5020:  K1..K8 = час переходів (HHMM), K9..K17 = значення 9 слотів,
+  # K18 = Time of Use enable (5/0), K19 = grid charge flag, K20 = generator charge flag.
+  # Час і прапорці спільні для всіх трьох сторінок; значення слотів - свої на кожну сторінку.
+  # K19 / K20 - бітові маски: біт 0..8 = дозвіл заряду від мережі / генератора для слотів 1..9.
+  # idx: 0..7 час, 8..16 слоти, 17 enable, 18 grid chg, 19 gen chg.
+  - id: jup_write_tou_page
+    mode: queued
+    parameters:
+      page: int
+      idx: int
+      newval: float
+    then:
+      - lambda: |-
+          if (page < 4 || page > 6 || idx < -1 || idx > 19) return;
+          // Час (idx 0..7) і прапорці (idx 17..19) пишемо тією сторінкою, у яку востаннє писали слоти
+          int pg = page;
+          if (idx >= 0 && (idx < 8 || idx >= 17)) pg = id(tou_page);
+          if (pg < 4 || pg > 6) pg = 4;
+          float t[8] = {id(tou_t1).state, id(tou_t2).state, id(tou_t3).state, id(tou_t4).state,
+                        id(tou_t5).state, id(tou_t6).state, id(tou_t7).state, id(tou_t8).state};
+          float s[9] = {id(tou_soc1).state, id(tou_soc2).state, id(tou_soc3).state,
+                        id(tou_soc4).state, id(tou_soc5).state, id(tou_soc6).state,
+                        id(tou_soc7).state, id(tou_soc8).state, id(tou_soc9).state};
+          float v[9] = {id(tou_v1).state, id(tou_v2).state, id(tou_v3).state,
+                        id(tou_v4).state, id(tou_v5).state, id(tou_v6).state,
+                        id(tou_v7).state, id(tou_v8).state, id(tou_v9).state};
+          float p[9] = {id(tou_p1).state, id(tou_p2).state, id(tou_p3).state,
+                        id(tou_p4).state, id(tou_p5).state, id(tou_p6).state,
+                        id(tou_p7).state, id(tou_p8).state, id(tou_p9).state};
+          float flags[3] = {id(raw_tou_enable).state, id(raw_tou_grid_chg).state,
+                            id(raw_tou_gen_chg).state};
+          float *vals = (pg == 4) ? s : ((pg == 5) ? v : p);
+          const float scale = (pg == 5) ? 0.01f : 1.0f;
+          if (idx >= 0) {  // idx = -1: переписати сторінку як є (зміна типу TOU)
+            if (idx < 8) t[idx] = newval;
+            else if (idx < 17) vals[idx - 8] = newval;
+            else flags[idx - 17] = newval;
+          }
+
+          uint16_t regs[21];
+          regs[0] = pg;  // K0 = номер сторінки
+          int prev = -1;
+          for (int i = 0; i < 8; i++) {
+            if (std::isnan(t[i])) {
+              ESP_LOGW("jup", "TOU time %d not read yet - write skipped", i + 1);
+              return;
+            }
+            int hhmm = (int) lroundf(t[i]);
+            if (hhmm < 0 || hhmm > 2359 || (hhmm % 100) > 59) {
+              ESP_LOGW("jup", "TOU time %d invalid (%d), expected HHMM - write skipped", i + 1, hhmm);
+              return;
+            }
+            if (hhmm < prev) ESP_LOGW("jup", "TOU time %d (%04d) is earlier than previous one", i + 1, hhmm);
+            prev = hhmm;
+            regs[1 + i] = (uint16_t) hhmm;
+          }
+          for (int i = 0; i < 9; i++) {
+            if (std::isnan(vals[i])) {
+              ESP_LOGW("jup", "TOU pg %d slot %d not read yet - write skipped", pg, i + 1);
+              return;
+            }
+            regs[9 + i] = (uint16_t) lroundf(vals[i] / scale);
+          }
+          for (int i = 0; i < 3; i++) {
+            if (std::isnan(flags[i])) {
+              ESP_LOGW("jup", "TOU flag %d not read yet - write skipped", i);
+              return;
+            }
+            regs[18 + i] = (uint16_t) lroundf(flags[i]);
+          }
+          ESP_LOGI("jup", "Writing TOU pg %d: idx %d = %.2f", pg, idx, newval);
+          id(jup_dc_writer).write_multiple_registers(5000, regs);
+          if (idx >= 8 && idx < 17) id(tou_page) = pg;  // запис слота вибирає режим TOU (SOC / Voltage / Power)
+          if (idx >= 0 && idx < 8) {
+            sensor::Sensor *ts[8] = {id(tou_t1), id(tou_t2), id(tou_t3), id(tou_t4),
+                                     id(tou_t5), id(tou_t6), id(tou_t7), id(tou_t8)};
+            ts[idx]->publish_state(newval);
+          }
+          if (idx == 17) id(raw_tou_enable).publish_state(newval);
+          else if (idx == 18) id(raw_tou_grid_chg).publish_state(newval);
+          else if (idx == 19) id(raw_tou_gen_chg).publish_state(newval);
+
+
+  # ---- Сторінка параметрів №7: мережа (напруга/частота мережі й генератора, CT) ----
+  # K0=7, K1..K14 одним записом у 5000..5014:
+  #   K1=642 номінальна напруга (0.1В), K2=643 номінальна частота (0.01Гц), K3=644 макс. струм (0.01А),
+  #   K4=645 Uмереж.макс, K5=646 Uмереж.мін (0.1В), K6=647 Fмереж.макс, K7=648 Fмереж.мін (0.01Гц),
+  #   K8=649 Fген.макс, K9=650 Fген.мін (0.01Гц), K10=652 Uген.макс, K11=653 Uген.мін (0.1В),
+  #   K12=2733 слово керування мережею (передаємо як є), K13=2735 макс. потужність мережі (0.1кВт),
+  #   K14=708 коефіцієнт зовнішнього CT.
+  # УВАГА: ці регістри лежать у блоці інвертора, а сторінка пишеться через jup_dc_writer (як сторінки 3..6).
+  # Якщо запис не проходить - спробуйте jup_inv_writer.
+  - id: jup_write_ac_page
+    mode: queued
+    parameters:
+      idx: int
+      newval: float
+    then:
+      - lambda: |-
+          static const float scale[14] = {0.1f, 0.01f, 0.01f, 0.1f, 0.1f, 0.01f, 0.01f,
+                                          0.01f, 0.01f, 0.1f, 0.1f, 1.0f, 0.1f, 1.0f};
+          if (idx < 0 || idx > 13 || std::isnan(newval)) return;
+          float cur[14] = {
+            id(p7_inv_v_rated).state, id(p7_inv_hz_rated).state, id(p7_ongrid_a_max).state,
+            id(p7_grid_v_max).state, id(p7_grid_v_min).state, id(p7_grid_hz_max).state,
+            id(p7_grid_hz_min).state, id(p7_gen_hz_max).state, id(p7_gen_hz_min).state,
+            id(p7_gen_v_max).state, id(p7_gen_v_min).state,
+            id(raw_grid_ctrl).state, id(grid_max_power_kw).state, id(p7_ct_ratio).state
+          };
+          cur[idx] = newval;
+          uint16_t regs[15];
+          regs[0] = 7;  // K0 = номер сторінки
+          for (int i = 0; i < 14; i++) {
+            if (std::isnan(cur[i])) {
+              ESP_LOGW("jup", "Page 7 not fully read yet (param %d) - write skipped", i + 1);
+              return;
+            }
+            regs[i + 1] = (uint16_t) lroundf(cur[i] / scale[i]);
+          }
+          ESP_LOGI("jup", "Writing page 7: K%d = %.2f", idx + 1, newval);
+          id(jup_dc_writer).write_multiple_registers(5000, regs);
+
+  # ---- Сторінка параметрів №8: порт генератора / Smart Load / AC Couple ----
+  # K0=8, K1..K15 одним записом у 5000..5015:
+  #   K1=701 тип порту, K2=702 режим Smart Load (0x05 / 0x50 / 0x55), K3=705 режим AC Couple (5=VF, 0=PQ),
+  #   K4=2736 макс. потужність генератора (0.1кВт, передаємо як є), K5=703 сигнал запуску генератора (0x5),
+  #   K6=3547 SL старт SOC, K7=3548 SL стоп SOC, K8=3549 SL старт U (0.01В), K9=3550 SL стоп U (0.01В),
+  #   K10=3551 SL старт PV (Вт), K11=3552 частота AC Couple (0.01Гц), K12=3553 AC старт SOC,
+  #   K13=3554 AC стоп SOC, K14=3557 AC старт U (0.01В), K15=3558 AC стоп U (0.01В).
+  - id: jup_write_gen_page
+    mode: queued
+    parameters:
+      idx: int
+      newval: float
+    then:
+      - lambda: |-
+          static const float scale[15] = {1.0f, 1.0f, 1.0f, 0.1f, 1.0f, 1.0f, 1.0f, 0.01f,
+                                          0.01f, 1.0f, 0.01f, 1.0f, 1.0f, 0.01f, 0.01f};
+          if (idx < 0 || idx > 14 || std::isnan(newval)) return;
+          float cur[15] = {
+            id(raw_gen_port).state, id(raw_smart_mode).state, id(raw_gen_mode).state,
+            id(gen_max_power_kw).state, id(raw_gen_sig).state,
+            id(p8_sl_on_soc).state, id(p8_sl_off_soc).state, id(p8_sl_on_v).state,
+            id(p8_sl_off_v).state, id(p8_sl_start_pw).state, id(p8_ac_freq).state,
+            id(p8_ac_on_soc).state, id(p8_ac_off_soc).state, id(p8_ac_on_v).state,
+            id(p8_ac_off_v).state
+          };
+          cur[idx] = newval;
+          uint16_t regs[16];
+          regs[0] = 8;  // K0 = номер сторінки
+          for (int i = 0; i < 15; i++) {
+            if (std::isnan(cur[i])) {
+              ESP_LOGW("jup", "Page 8 not fully read yet (param %d) - write skipped", i + 1);
+              return;
+            }
+            regs[i + 1] = (uint16_t) lroundf(cur[i] / scale[i]);
+          }
+          ESP_LOGI("jup", "Writing page 8: K%d = %.2f", idx + 1, newval);
+          id(jup_dc_writer).write_multiple_registers(5000, regs);
+          // оновлюємо сирі слова, щоб select/switch одразу показали нове значення
+          if (idx == 0) id(raw_gen_port).publish_state(newval);
+          else if (idx == 1) id(raw_smart_mode).publish_state(newval);
+          else if (idx == 2) id(raw_gen_mode).publish_state(newval);
+          else if (idx == 4) id(raw_gen_sig).publish_state(newval);
+
+  # ---- Сторінка параметрів №1: батарея і ліміти PV ----
+  # K0=1, K1..K10 одним записом у 5000..5010:
+  #   K1=2642 Uбат.макс (0.01В), K2=2643 Uбат.мін (0.01В), K3=2644 макс. струм заряду (0.1А),
+  #   K4=2645 макс. струм розряду (0.1А, ВІД'ЄМНЕ, INT16), K5=2646 ємність (Ач),
+  #   K6=2647 PV1 Umax (0.1В), K7=2648 PV1 Imax (0.01А), K8=2649 PV2 Umax (0.1В), K9=2650 PV2 Imax (0.01А),
+  #   K10=2652 тип батареї (0x0005 Lithium, 0x0000 Use Bat V, 0x0050 Use Bat %).
+  - id: jup_write_batt_page
+    mode: queued
+    parameters:
+      idx: int
+      newval: float
+    then:
+      - lambda: |-
+          static const float scale[10] = {0.01f, 0.01f, 0.1f, 0.1f, 1.0f, 0.1f, 0.01f, 0.1f, 0.01f, 1.0f};
+          if (idx < 0 || idx > 9 || std::isnan(newval)) return;
+          float cur[10] = {
+            id(p1_bat_v_max).state, id(p1_bat_v_min).state, id(p1_bat_chg_a).state,
+            id(p1_bat_dis_a).state, id(p1_bat_cap).state, id(p1_pv1_v).state,
+            id(p1_pv1_a).state, id(p1_pv2_v).state, id(p1_pv2_a).state, id(raw_bat_mode).state
+          };
+          cur[idx] = newval;
+          uint16_t regs[11];
+          regs[0] = 1;  // K0 = номер сторінки
+          for (int i = 0; i < 10; i++) {
+            if (std::isnan(cur[i])) {
+              ESP_LOGW("jup", "Page 1 not fully read yet (param %d) - write skipped", i + 1);
+              return;
+            }
+            regs[i + 1] = (uint16_t) (int16_t) lroundf(cur[i] / scale[i]);
+          }
+          ESP_LOGI("jup", "Writing page 1: K%d = %.2f", idx + 1, newval);
+          id(jup_dc_writer).write_multiple_registers(5000, regs);
+          if (idx == 9) id(raw_bat_mode).publish_state(newval);
+
+
+
+# ===========================================================================
+#  CONTROLS
+# ===========================================================================
+button:
+  # Регістр 15, Table 2-2: bit1..bit0 = 1 -> інвертор ON, 2 -> інвертор OFF
+  - platform: template
+    name: "Inverter ON"
+    icon: mdi:power
+    on_press:
+      - modbus_client.write_multiple_registers:
+          address: ${inverter_address}
+          start_address: 15
+          values: [0x0001]
+
+  # УВАГА: вимикає вихід інвертора (навантаження залишиться без живлення від нього)
+  - platform: template
+    name: "Inverter OFF"
+    icon: mdi:power-off
+    on_press:
+      - modbus_client.write_multiple_registers:
+          address: ${inverter_address}
+          start_address: 15
+          values: [0x0002]
+
+  # Синхронізація годинника інвертора з Home Assistant (регістри 655..661).
+  # Дні тижня: 1=Пн ... 7=Нд (припущення, у документації не уточнено).
+  - platform: template
+    name: "Sync Inverter Clock"
+    icon: mdi:clock-check-outline
+    entity_category: config
+    on_press:
+      - lambda: |-
+          auto now = id(ha_time).now();
+          if (!now.is_valid()) {
+            ESP_LOGW("jup", "Time not synced from Home Assistant yet");
+            return;
+          }
+          uint16_t regs[7] = {
+            (uint16_t) (now.year % 100), (uint16_t) now.month,
+            (uint16_t) ((now.day_of_week + 5) % 7 + 1), (uint16_t) now.day_of_month,
+            (uint16_t) now.hour, (uint16_t) now.minute, (uint16_t) now.second
+          };
+          ESP_LOGI("jup", "Setting inverter clock %02d-%02d-%02d %02d:%02d:%02d",
+                   now.year % 100, now.month, now.day_of_month, now.hour, now.minute, now.second);
+          id(jup_inv_writer).write_multiple_registers(655, regs);
+
+switch:
+  # Слово 2732: 0xXXX5 = заряд від генератора, 0xXX5X = battery first
+  # Слово 2733: 0xXXX5 = заряд від мережі,     0xX1XX = AC peak shaving
+  - platform: template
+    name: "Grid Charging"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_grid_ctrl).state)) return {};
+      return (((uint16_t) id(raw_grid_ctrl).state) & 0x000F) == 0x0005;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2733
+          mask: 15
+          value: 5
+    turn_off_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2733
+          mask: 15
+          value: 0
+
+  - platform: template
+    name: "Generator Charging"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_gen_ctrl).state)) return {};
+      return (((uint16_t) id(raw_gen_ctrl).state) & 0x000F) == 0x0005;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2732
+          mask: 15
+          value: 5
+    turn_off_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2732
+          mask: 15
+          value: 0
+
+  - platform: template
+    name: "Battery First"
+    icon: mdi:battery-heart-variant
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_gen_ctrl).state)) return {};
+      return (((uint16_t) id(raw_gen_ctrl).state) & 0x00F0) == 0x0050;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2732
+          mask: 240
+          value: 80
+    turn_off_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2732
+          mask: 240
+          value: 0
+
+  - platform: template
+    name: "AC Peak Shaving"
+    icon: mdi:chart-bell-curve-cumulative
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_grid_ctrl).state)) return {};
+      return (((uint16_t) id(raw_grid_ctrl).state) & 0x0F00) == 0x0100;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2733
+          mask: 3840
+          value: 256
+    turn_off_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2733
+          mask: 3840
+          value: 0
+
+
+  # ---- Time of Use: головний вимикач і дозволи заряду за розкладом ----
+  # (прапорці записуються разом зі сторінкою 4 (SOC); значення слотів лишаються поточні)
+  - platform: template
+    name: "Time of Use"
+    icon: mdi:calendar-clock
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_enable).state)) return {};
+      return ((uint16_t) id(raw_tou_enable).state) == 5;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 17
+          newval: 5
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 17
+          newval: 0
+
+  # ---- Дозволи заряду для кожного з 9 слотів (як галочки Grid Chg En / Gen Chg En в додатку) ----
+  # Регістри 2677 (мережа) і 2678 (генератор): біт 0..8 = слот 1..9.
+  - platform: template
+    name: "TOU Grid Charge Slot 1"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0001) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0001);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFFE);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 2"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0002) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0002);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFFD);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 3"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0004) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0004);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFFB);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 4"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0008) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0008);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFF7);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 5"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0010) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0010);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFEF);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 6"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0020) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0020);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFDF);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 7"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0040) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0040);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFFBF);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 8"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0080) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0080);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFF7F);'
+
+  - platform: template
+    name: "TOU Grid Charge Slot 9"
+    icon: mdi:transmission-tower-import
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_grid_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_grid_chg).state) & 0x0100) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) | 0x0100);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 18
+          newval: !lambda 'if (std::isnan(id(raw_tou_grid_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_grid_chg).state) & 0xFEFF);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 1"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0001) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0001);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFFE);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 2"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0002) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0002);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFFD);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 3"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0004) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0004);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFFB);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 4"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0008) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0008);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFF7);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 5"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0010) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0010);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFEF);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 6"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0020) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0020);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFDF);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 7"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0040) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0040);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFFBF);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 8"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0080) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0080);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFF7F);'
+
+  - platform: template
+    name: "TOU Generator Charge Slot 9"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_tou_gen_chg).state)) return {};
+      return (((uint16_t) id(raw_tou_gen_chg).state) & 0x0100) != 0;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) | 0x0100);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 19
+          newval: !lambda 'if (std::isnan(id(raw_tou_gen_chg).state)) return NAN; return (float) (((uint16_t) id(raw_tou_gen_chg).state) & 0xFEFF);'
+
+  # ---- Ліміт потужності з мережі (слово 2733: 0xXX5X = ліміт увімкнено) ----
+  - platform: template
+    name: "Grid Power Limit"
+    icon: mdi:transmission-tower-off
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_grid_ctrl).state)) return {};
+      return (((uint16_t) id(raw_grid_ctrl).state) & 0x00F0) == 0x0050;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2733
+          mask: 240
+          value: 80
+    turn_off_action:
+      - script.execute:
+          id: jup_write_ctrl_word
+          addr: 2733
+          mask: 240
+          value: 0
+
+
+  # ---- Порт генератора / Smart Load (сторінка 8) ----
+  # Слово 702: 0x05 = Smart Load живиться при наявності мережі, 0x50 = лише від батареї (за таблицею документації).
+  - platform: template
+    name: "Smart Load On-Grid Always On"
+    icon: mdi:power-plug
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_smart_mode).state)) return {};
+      return (((uint16_t) id(raw_smart_mode).state) & 0x000F) == 0x0005;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 1
+          newval: !lambda 'if (std::isnan(id(raw_smart_mode).state)) return NAN; return (float) ((((uint16_t) id(raw_smart_mode).state) & 0xFFF0) | 0x0005);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 1
+          newval: !lambda 'if (std::isnan(id(raw_smart_mode).state)) return NAN; return (float) ((((uint16_t) id(raw_smart_mode).state) & 0xFFF0) | 0x0000);'
+
+  - platform: template
+    name: "Smart Load Battery Only"
+    icon: mdi:battery-arrow-up
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_smart_mode).state)) return {};
+      return (((uint16_t) id(raw_smart_mode).state) & 0x00F0) == 0x0050;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 1
+          newval: !lambda 'if (std::isnan(id(raw_smart_mode).state)) return NAN; return (float) ((((uint16_t) id(raw_smart_mode).state) & 0xFF0F) | 0x0050);'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 1
+          newval: !lambda 'if (std::isnan(id(raw_smart_mode).state)) return NAN; return (float) ((((uint16_t) id(raw_smart_mode).state) & 0xFF0F) | 0x0000);'
+
+  - platform: template
+    name: "Generator Start Signal"
+    icon: mdi:engine
+    entity_category: config
+    lambda: |-
+      if (std::isnan(id(raw_gen_sig).state)) return {};
+      return ((uint16_t) id(raw_gen_sig).state) == 0x0005;
+    turn_on_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 4
+          newval: !lambda 'return 5.0f;'
+    turn_off_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 4
+          newval: !lambda 'return 0.0f;'
+
+
+number:
+  # Регістр 670 - пряме читання/запис (функція 0x10)
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Grid Reconnect Time"
+    address: 670
+    value_type: U_WORD
+    use_write_multiple: true
+    unit_of_measurement: "s"
+    min_value: 0
+    max_value: 3600
+    step: 1
+    mode: box
+    entity_category: config
+
+  # ---- Сторінка параметрів №3: ліміти мережі/генератора (читання 2655..2667, запис через script) ----
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_dis_pmax
+    name: "Grid Discharge Max Power"
+    address: 2655
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 10000
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_grid_page).execute(0, x);
+      id(p3_grid_dis_pmax).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_dis_soc_min
+    name: "Grid Discharge Min SOC"
+    address: 2656
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 5
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_grid_page).execute(1, x);
+      id(p3_grid_dis_soc_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_chg_soc_max
+    name: "Grid Charge Max SOC"
+    address: 2657
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_grid_page).execute(2, x);
+      id(p3_grid_chg_soc_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_dis_vmin
+    name: "Grid Discharge Min Voltage"
+    address: 2658
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_grid_page).execute(3, x);
+      id(p3_grid_dis_vmin).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_chg_vmax
+    name: "Grid Charge Max Voltage"
+    address: 2659
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_grid_page).execute(4, x);
+      id(p3_grid_chg_vmax).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_chg_imax
+    name: "Grid Charge Max Current"
+    address: 2660
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: 260
+    step: 0.1
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_grid_page).execute(5, x);
+      id(p3_grid_chg_imax).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_gen_chg_imax
+    name: "Generator Charge Max Current"
+    address: 2661
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: 260
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_grid_page).execute(6, x);
+      id(p3_gen_chg_imax).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_gen_dis_pmax
+    name: "Generator Discharge Max Power"
+    address: 2662
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 10000
+    step: 100
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_grid_page).execute(7, x);
+      id(p3_gen_dis_pmax).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_gen_dis_soc_min
+    name: "Generator Discharge Min SOC"
+    address: 2663
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_grid_page).execute(8, x);
+      id(p3_gen_dis_soc_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_gen_chg_soc_max
+    name: "Generator Charge Max SOC"
+    address: 2664
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_grid_page).execute(9, x);
+      id(p3_gen_chg_soc_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_gen_dis_vmin
+    name: "Generator Discharge Min Voltage"
+    address: 2665
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_grid_page).execute(10, x);
+      id(p3_gen_dis_vmin).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_gen_chg_vmax
+    name: "Generator Charge Max Voltage"
+    address: 2666
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_grid_page).execute(11, x);
+      id(p3_gen_chg_vmax).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p3_grid_chg_prohibit_soc
+    name: "Grid Charge Prohibit SOC"
+    address: 2667
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_grid_page).execute(12, x);
+      id(p3_grid_chg_prohibit_soc).publish_state(x);
+      return {};
+
+  # ===== Time of Use =====
+  # Часи переходів T1..T8 - це елементи "datetime" (вибір часу ГГ:ХХ), див. секцію DATETIME нижче.
+  # Слот 1 = 00:00..T1, слот 2 = T1..T2, ... слот 9 = T8..23:59. Часи мають іти по зростанню.
+
+  # -- сторінка 4: цільовий SOC для слотів --
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc1
+    name: "TOU SOC Slot 1"
+    address: 2697
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 8, x);
+      id(tou_soc1).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc2
+    name: "TOU SOC Slot 2"
+    address: 2698
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 9, x);
+      id(tou_soc2).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc3
+    name: "TOU SOC Slot 3"
+    address: 2699
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 10, x);
+      id(tou_soc3).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc4
+    name: "TOU SOC Slot 4"
+    address: 2700
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 11, x);
+      id(tou_soc4).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc5
+    name: "TOU SOC Slot 5"
+    address: 2701
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 12, x);
+      id(tou_soc5).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc6
+    name: "TOU SOC Slot 6"
+    address: 2702
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 13, x);
+      id(tou_soc6).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc7
+    name: "TOU SOC Slot 7"
+    address: 2703
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 14, x);
+      id(tou_soc7).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc8
+    name: "TOU SOC Slot 8"
+    address: 2704
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 15, x);
+      id(tou_soc8).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_soc9
+    name: "TOU SOC Slot 9"
+    address: 2705
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(4, 16, x);
+      id(tou_soc9).publish_state(x);
+      return {};
+
+  # -- сторінка 5: цільова напруга батареї (вимкнено за замовчуванням; запис перемикає інвертор у режим Voltage, як вкладка в додатку) --
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v1
+    name: "TOU Voltage Slot 1"
+    address: 2711
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 8, x);
+      id(tou_v1).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v2
+    name: "TOU Voltage Slot 2"
+    address: 2712
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 9, x);
+      id(tou_v2).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v3
+    name: "TOU Voltage Slot 3"
+    address: 2713
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 10, x);
+      id(tou_v3).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v4
+    name: "TOU Voltage Slot 4"
+    address: 2714
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 11, x);
+      id(tou_v4).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v5
+    name: "TOU Voltage Slot 5"
+    address: 2715
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 12, x);
+      id(tou_v5).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v6
+    name: "TOU Voltage Slot 6"
+    address: 2716
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 13, x);
+      id(tou_v6).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v7
+    name: "TOU Voltage Slot 7"
+    address: 2717
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 14, x);
+      id(tou_v7).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v8
+    name: "TOU Voltage Slot 8"
+    address: 2718
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 15, x);
+      id(tou_v8).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_v9
+    name: "TOU Voltage Slot 9"
+    address: 2719
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 37
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_tou_page).execute(5, 16, x);
+      id(tou_v9).publish_state(x);
+      return {};
+
+  # -- сторінка 6: потужність заряду за слотами (запис слота перемикає інвертор у режим Power, як вкладка в додатку) --
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p1
+    name: "TOU Power Slot 1"
+    address: 2683
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 8, x);
+      id(tou_p1).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p2
+    name: "TOU Power Slot 2"
+    address: 2684
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 9, x);
+      id(tou_p2).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p3
+    name: "TOU Power Slot 3"
+    address: 2685
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 10, x);
+      id(tou_p3).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p4
+    name: "TOU Power Slot 4"
+    address: 2686
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 11, x);
+      id(tou_p4).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p5
+    name: "TOU Power Slot 5"
+    address: 2687
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 12, x);
+      id(tou_p5).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p6
+    name: "TOU Power Slot 6"
+    address: 2688
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 13, x);
+      id(tou_p6).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p7
+    name: "TOU Power Slot 7"
+    address: 2689
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 14, x);
+      id(tou_p7).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p8
+    name: "TOU Power Slot 8"
+    address: 2690
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 15, x);
+      id(tou_p8).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: tou_p9
+    name: "TOU Power Slot 9"
+    address: 2691
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: ${tou_max_power}
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_tou_page).execute(6, 16, x);
+      id(tou_p9).publish_state(x);
+      return {};
+
+  # ===== Ліміти потужності (прямий запис, як у Grid Reconnect Time) =====
+  # 2735/2736: у регістрі 1 = 100 Вт, показуємо в кВт
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: grid_max_power_kw
+    name: "Grid Max Power"
+    address: 2735
+    value_type: U_WORD
+    use_write_multiple: true
+    unit_of_measurement: "kW"
+    min_value: 0
+    max_value: 20
+    step: 0.1
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.1;"
+    write_lambda: "return x * 10.0;"
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    id: gen_max_power_kw
+    name: "Generator Max Power"
+    address: 2736
+    value_type: U_WORD
+    use_write_multiple: true
+    unit_of_measurement: "kW"
+    min_value: 0
+    max_value: 20
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: "return x * 10.0;"
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    name: "Max Reverse Flow Power"
+    address: 2737
+    value_type: U_WORD
+    use_write_multiple: true
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 200
+    step: 1
+    mode: box
+    entity_category: config
+  # Максимальна потужність продажу в мережу (блок інвертора, регістр 700)
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Max Sell Power"
+    address: 700
+    value_type: U_WORD
+    use_write_multiple: true
+    unit_of_measurement: "W"
+    min_value: 0
+    max_value: 10000
+    step: 100
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+
+  # ===== Налаштування мережі (сторінка 7; читання 642..653 та 708, запис через script) =====
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_inv_v_rated
+    name: "Inverter Rated Voltage"
+    address: 642
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 218
+    max_value: 232
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(0, x);
+      id(p7_inv_v_rated).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_inv_hz_rated
+    name: "Inverter Rated Frequency"
+    address: 643
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    min_value: 46
+    max_value: 54
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(1, x);
+      id(p7_inv_hz_rated).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_ongrid_a_max
+    name: "Max Grid-Connected Current"
+    address: 644
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: 36
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(2, x);
+      id(p7_ongrid_a_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_grid_v_max
+    name: "Grid Voltage Limit Max"
+    address: 645
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 160
+    max_value: 264
+    step: 0.1
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(3, x);
+      id(p7_grid_v_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_grid_v_min
+    name: "Grid Voltage Limit Min"
+    address: 646
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 160
+    max_value: 264
+    step: 0.1
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(4, x);
+      id(p7_grid_v_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_grid_hz_max
+    name: "Grid Frequency Limit Max"
+    address: 647
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    min_value: 46
+    max_value: 54
+    step: 0.01
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(5, x);
+      id(p7_grid_hz_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_grid_hz_min
+    name: "Grid Frequency Limit Min"
+    address: 648
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    min_value: 46
+    max_value: 54
+    step: 0.01
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(6, x);
+      id(p7_grid_hz_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_gen_hz_max
+    name: "Generator Frequency Limit Max"
+    address: 649
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    min_value: 46
+    max_value: 54
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(7, x);
+      id(p7_gen_hz_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_gen_hz_min
+    name: "Generator Frequency Limit Min"
+    address: 650
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    min_value: 46
+    max_value: 54
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(8, x);
+      id(p7_gen_hz_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_gen_v_max
+    name: "Generator Voltage Limit Max"
+    address: 652
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 160
+    max_value: 264
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(9, x);
+      id(p7_gen_v_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_gen_v_min
+    name: "Generator Voltage Limit Min"
+    address: 653
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 160
+    max_value: 264
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_ac_page).execute(10, x);
+      id(p7_gen_v_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: inv_slow
+    id: p7_ct_ratio
+    name: "External CT Ratio"
+    address: 708
+    value_type: U_WORD
+    min_value: 0
+    max_value: 1000
+    step: 1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_ac_page).execute(13, x);
+      id(p7_ct_ratio).publish_state(x);
+      return {};
+
+  # ===== Smart Load / AC Couple (сторінка 8; читання 3547..3558, запис через script) =====
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_sl_on_soc
+    name: "Smart Load Start SOC"
+    address: 3547
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 40
+    max_value: 100
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_gen_page).execute(5, x);
+      id(p8_sl_on_soc).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_sl_off_soc
+    name: "Smart Load Stop SOC"
+    address: 3548
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 30
+    max_value: 95
+    step: 1
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_gen_page).execute(6, x);
+      id(p8_sl_off_soc).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_sl_on_v
+    name: "Smart Load Start Voltage"
+    address: 3549
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 49
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_gen_page).execute(7, x);
+      id(p8_sl_on_v).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_sl_off_v
+    name: "Smart Load Stop Voltage"
+    address: 3550
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 48
+    max_value: 58
+    step: 0.01
+    mode: box
+    entity_category: config
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_gen_page).execute(8, x);
+      id(p8_sl_off_v).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_sl_start_pw
+    name: "Smart Load Start PV Power"
+    address: 3551
+    value_type: U_WORD
+    unit_of_measurement: "W"
+    min_value: 100
+    max_value: 12000
+    step: 100
+    mode: box
+    entity_category: config
+    write_lambda: |-
+      id(jup_write_gen_page).execute(9, x);
+      id(p8_sl_start_pw).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_ac_freq
+    name: "AC Couple Frequency"
+    address: 3552
+    value_type: U_WORD
+    unit_of_measurement: "Hz"
+    min_value: 50
+    max_value: 55
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_gen_page).execute(10, x);
+      id(p8_ac_freq).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_ac_on_soc
+    name: "AC Couple Start SOC"
+    address: 3553
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 0
+    max_value: 80
+    step: 1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_gen_page).execute(11, x);
+      id(p8_ac_on_soc).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_ac_off_soc
+    name: "AC Couple Stop SOC"
+    address: 3554
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    min_value: 10
+    max_value: 90
+    step: 1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_gen_page).execute(12, x);
+      id(p8_ac_off_soc).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_ac_on_v
+    name: "AC Couple Start Voltage"
+    address: 3557
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 40
+    max_value: 56
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_gen_page).execute(13, x);
+      id(p8_ac_on_v).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p8_ac_off_v
+    name: "AC Couple Stop Voltage"
+    address: 3558
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 42
+    max_value: 58
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_gen_page).execute(14, x);
+      id(p8_ac_off_v).publish_state(x);
+      return {};
+
+  # ===== Батарея і ліміти PV (сторінка 1; читання 2642..2650, запис через script) =====
+  # УВАГА: неправильні значення можуть зашкодити батареї - тому все вимкнено за замовчуванням.
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_bat_v_max
+    name: "Battery Max Voltage"
+    address: 2642
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 15
+    max_value: 60
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(0, x);
+      id(p1_bat_v_max).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_bat_v_min
+    name: "Battery Min Voltage"
+    address: 2643
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 10
+    max_value: 55
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(1, x);
+      id(p1_bat_v_min).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_bat_chg_a
+    name: "Battery Max Charge Current"
+    address: 2644
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: 300
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(2, x);
+      id(p1_bat_chg_a).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_bat_dis_a
+    name: "Battery Max Discharge Current"
+    address: 2645
+    value_type: S_WORD
+    unit_of_measurement: "A"
+    min_value: -300
+    max_value: 0
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(3, x);
+      id(p1_bat_dis_a).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_bat_cap
+    name: "Battery Capacity"
+    address: 2646
+    value_type: U_WORD
+    unit_of_measurement: "Ah"
+    min_value: 10
+    max_value: 2000
+    step: 1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    write_lambda: |-
+      id(jup_write_batt_page).execute(4, x);
+      id(p1_bat_cap).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_pv1_v
+    name: "PV1 Max Voltage"
+    address: 2647
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 160
+    max_value: 500
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(5, x);
+      id(p1_pv1_v).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_pv1_a
+    name: "PV1 Max Current"
+    address: 2648
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: 26
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(6, x);
+      id(p1_pv1_a).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_pv2_v
+    name: "PV2 Max Voltage"
+    address: 2649
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    min_value: 160
+    max_value: 500
+    step: 0.1
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.1;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(7, x);
+      id(p1_pv2_v).publish_state(x);
+      return {};
+  - platform: modbus_controller
+    modbus_controller_id: dc_slow
+    id: p1_pv2_a
+    name: "PV2 Max Current"
+    address: 2650
+    value_type: U_WORD
+    unit_of_measurement: "A"
+    min_value: 0
+    max_value: 26
+    step: 0.01
+    mode: box
+    entity_category: config
+    disabled_by_default: true
+    lambda: "return x * 0.01;"
+    write_lambda: |-
+      id(jup_write_batt_page).execute(8, x);
+      id(p1_pv2_a).publish_state(x);
+      return {};
+
+# ===========================================================================
+#  SELECTS
+# ===========================================================================
+select:
+  # Режим роботи (регістр 6, Table 2-1). Небезпечні режими Standby / DC / AC voltage source
+  # навмисно не додані. Для Time of Use потрібен режим 6 або 10.
+  - platform: modbus_controller
+    modbus_controller_id: inv_fast
+    name: "Working Mode Control"
+    icon: mdi:cog-transfer
+    address: 6
+    value_type: U_WORD
+    use_write_multiple: true
+    entity_category: config
+    optionsmap:
+      "Power control": 4
+      "Time-based power control": 6
+      "Auto on/off-grid, power control": 8
+      "Auto on/off-grid, time-based power control": 10
+
+  # Режим віддачі в мережу (регістр 2083)
+  - platform: modbus_controller
+    modbus_controller_id: dc_tou
+    name: "Grid Export Mode"
+    icon: mdi:transmission-tower-export
+    address: 2083
+    value_type: U_WORD
+    use_write_multiple: true
+    entity_category: config
+    disabled_by_default: true
+    optionsmap:
+      "Sell first": 1
+      "Zero export to grid port": 2
+      "Zero export to CT": 3
+
+  # ---- Тип порту генератора (регістр 701, сторінка 8) ----
+  - platform: template
+    name: "Generator Port Type"
+    icon: mdi:engine
+    entity_category: config
+    options: ["Generator", "Smart load", "AC couple"]
+    update_interval: 10s
+    lambda: |-
+      float v = id(raw_gen_port).state;
+      if (std::isnan(v)) return {};
+      switch ((int) v) {
+        case 0: return std::string("Generator");
+        case 5: return std::string("Smart load");
+        case 10: return std::string("AC couple");
+        default: return {};
+      }
+    set_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 0
+          newval: !lambda 'return x == "Smart load" ? 5.0f : (x == "AC couple" ? 10.0f : 0.0f);'
+
+  # ---- Режим AC Couple (регістр 705, сторінка 8): VF або PQ ----
+  - platform: template
+    name: "AC Couple Mode"
+    icon: mdi:sine-wave
+    entity_category: config
+    disabled_by_default: true
+    options: ["PQ", "VF"]
+    update_interval: 10s
+    lambda: |-
+      float v = id(raw_gen_mode).state;
+      if (std::isnan(v)) return {};
+      return std::string(((int) v) == 5 ? "VF" : "PQ");
+    set_action:
+      - script.execute:
+          id: jup_write_gen_page
+          idx: 2
+          newval: !lambda 'return x == "VF" ? 5.0f : 0.0f;'
+
+  # ---- Тип батареї (регістр 2652, сторінка 1). Значення за таблицею "Parameter settings" ----
+  - platform: template
+    name: "Battery Type"
+    icon: mdi:battery-unknown
+    entity_category: config
+    disabled_by_default: true
+    options: ["Lithium", "Use battery voltage", "Use battery %"]
+    update_interval: 60s
+    lambda: |-
+      float v = id(raw_bat_mode).state;
+      if (std::isnan(v)) return {};
+      switch ((int) v) {
+        case 5: return std::string("Lithium");
+        case 0: return std::string("Use battery voltage");
+        case 80: return std::string("Use battery %");
+        default: return {};
+      }
+    set_action:
+      - script.execute:
+          id: jup_write_batt_page
+          idx: 9
+          newval: !lambda 'return x == "Lithium" ? 5.0f : (x == "Use battery %" ? 80.0f : 0.0f);'
+
+
+# ===========================================================================
+#  DATETIME (Time of Use: початок і кінець слотів у форматі ГГ:ХХ)
+# ===========================================================================
+datetime:
+  - platform: template
+    type: time
+    id: tou_time1
+    name: "TOU Slot 1 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t1).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 0
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time2
+    name: "TOU Slot 2 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t2).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 1
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time3
+    name: "TOU Slot 3 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t3).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 2
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time4
+    name: "TOU Slot 4 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t4).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 3
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time5
+    name: "TOU Slot 5 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t5).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 4
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time6
+    name: "TOU Slot 6 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t6).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 5
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time7
+    name: "TOU Slot 7 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t7).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 6
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_time8
+    name: "TOU Slot 8 End"
+    icon: mdi:clock-outline
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t8).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 7
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  # ---- Початок слотів 2..9. Інвертор має лише 8 меж: початок слота N = кінець слота N-1 (той самий регістр),
+  # тому зміна "Slot N Start" змінює й "Slot N-1 End". Початок слота 1 (00:00) і кінець слота 9 (23:59) фіксовані. ----
+  - platform: template
+    type: time
+    id: tou_start2
+    name: "TOU Slot 2 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t1).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 0
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start3
+    name: "TOU Slot 3 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t2).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 1
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start4
+    name: "TOU Slot 4 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t3).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 2
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start5
+    name: "TOU Slot 5 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t4).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 3
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start6
+    name: "TOU Slot 6 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t5).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 4
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start7
+    name: "TOU Slot 7 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t6).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 5
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start8
+    name: "TOU Slot 8 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t7).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 6
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+  - platform: template
+    type: time
+    id: tou_start9
+    name: "TOU Slot 9 Start"
+    icon: mdi:clock-start
+    entity_category: config
+    update_interval: 5s
+    lambda: |-
+      float v = id(tou_t8).state;
+      if (std::isnan(v)) return {};
+      ESPTime t = {};
+      t.hour = ((int) v) / 100;
+      t.minute = ((int) v) % 100;
+      t.second = 0;
+      return t;
+    set_action:
+      - script.execute:
+          id: jup_write_tou_page
+          page: 4
+          idx: 7
+          newval: !lambda 'return x.hour * 100 + x.minute;'
+
+
+# ===========================================================================
+#  TIME (для синхронізації годинника інвертора)
+# ===========================================================================
+time:
+  - platform: homeassistant
+    id: ha_time
+
